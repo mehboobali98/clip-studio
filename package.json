@@ -1,0 +1,11 @@
+{
+  "name": "clip-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Code-rendered video clips for Claude Code: HTML scenes captured frame by frame with Playwright, encoded with ffmpeg.",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

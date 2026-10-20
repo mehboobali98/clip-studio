@@ -1,0 +1,14 @@
+{
+  "name": "clip-studio",
+  "displayName": "clip studio",
+  "version": "0.1.0",
+  "description": "Make short, polished videos from code: product demos of real-looking app windows and motion-graphics clips, rendered frame by frame with Playwright and ffmpeg. For LinkedIn, portfolios, Upwork and READMEs.",
+  "author": {
+    "name": "Mehboob Ali",
+    "url": "https://github.com/mehboobali98"
+  },
+  "homepage": "https://github.com/mehboobali98/clip-studio",
+  "repository": "https://github.com/mehboobali98/clip-studio",
+  "license": "MIT",
+  "keywords": ["video", "motion-graphics", "product-demo", "playwright", "ffmpeg", "linkedin"]
+}
