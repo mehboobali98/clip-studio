@@ -32,7 +32,14 @@ particles. `templates/product-demo.html` is a complete 28-second example
 | A key number | Pop it out in screen space, big, with a rolling count and a dark radial backing, then let it settle back. |
 | Polish | A light sweep crosses the window glass on the entrance and at scene changes. |
 
+## Page contract extras
+
+- `window.captions` lists `{ from, to, text }` cues built from the captions data, so `capture.mjs srt` writes an SRT for LinkedIn.
+- `window.lintSkip` lists the swoop, the page turns and the exit, where text is mid-move on purpose.
+- `brand.json` next to the page overrides colours (`text`, `dim`, `faint`, `frame`, `bar`, `border`, `accent`, `ok`, `key`, `str`, `num`, `prompt`) and fonts (classes `ui`, `mono`).
+
 ## Fonts
 
 SF Pro and Menlo on macOS, with Inter and JetBrains Mono from Google Fonts as
-fallbacks elsewhere. Menlo's advance is 0.602 em; caret maths assumes it.
+fallbacks elsewhere. Menlo's advance is 0.602 em; caret maths assumes it. Every
+font face is loaded before `ready`, so no glyph subset lands mid-capture.

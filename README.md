@@ -27,6 +27,19 @@ Both templates are complete, working videos (about the
 [rmine](https://github.com/mehboobali98/rmine) CLI and the
 [rmine-skills](https://github.com/mehboobali98/rmine-skills) plugin) to adapt.
 
+## What it adds over a plain render loop
+
+- **Live preview:** a scrubber with play, frame stepping and marked moments.
+- **Lint:** the same moment must render the same frame whatever came before it; text has to be readable on a phone and inside the frame.
+- **Brand file:** one `brand.json` restyles a template's colours and fonts.
+- **Captions and music:** an SRT from the page's captions for LinkedIn, and an optional music track, trimmed, faded and levelled.
+- **Checkpoints:** a keyframe sheet is approved before any full render.
+
+For narration, voiceover, stock effects and a hosted studio, see
+[HyperFrames](https://github.com/heygen-com/hyperframes), the full-featured
+framework for HTML video. clip-studio is a small, opinionated kit with two
+house styles.
+
 ## Install
 
 ```sh
@@ -53,15 +66,19 @@ or run `/clip`. The skill works in checkpoints:
 They work on their own too:
 
 ```sh
+node skills/clip/scripts/preview.mjs page.html                        # live scrubber
 node skills/clip/scripts/capture.mjs page.html check                  # page errors, duration
+node skills/clip/scripts/capture.mjs page.html lint                   # determinism, text size
 node skills/clip/scripts/capture.mjs page.html keys keys 1.5 6 12     # keyframes
 bash skills/clip/scripts/sheet.sh keys sheet.png                       # contact sheet
 node skills/clip/scripts/capture.mjs page.html all frames --fps 60    # every frame
-bash skills/clip/scripts/encode.sh frames out.mp4 60 9.5               # MP4 + cover
+bash skills/clip/scripts/encode.sh frames out.mp4 60 9.5 [music.mp3]   # MP4 + cover
+node skills/clip/scripts/capture.mjs page.html srt out.srt            # captions
 ```
 
-A page needs `window.ready`, `window.seek(t)`, `window.duration` and,
-optionally, `window.frame = { width, height }` (default 1080×1350).
+A page needs `window.ready`, `window.seek(t)` and `window.duration`.
+Optional: `window.frame = { width, height }` (default 1080×1350),
+`window.captions = [{ from, to, text }]` and `window.lintSkip = [[from, to]]`.
 
 ## License
 
