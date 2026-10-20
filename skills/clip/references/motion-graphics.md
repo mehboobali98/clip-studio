@@ -27,6 +27,12 @@ mesh, dust on the end card) keeps holds alive.
 | Camera | `keyframes([[t, cx, cy, s], ...], t)` | Dive in, follow, snap back; add a short shake on impacts |
 | Counter | update the number each frame | Count up with an ease-out over half a second; the product demo's pop-out shows it |
 
+## Page contract extras
+
+- `window.lintSkip` lists the implosion, the dive, the punch-in, the exit and the close.
+- The miniature cards carry `data-lint="decor"`: their tiny text is illustration, not reading.
+- `brand.json` next to the page overrides colours (`ink`, `surface`, `line`, `lineStrong`, `quiet`, `paper`, `signal`, `teal`, `heat`, `go`) and fonts (classes `fr`, `sans`, `mono`).
+
 ## Rules
 
 - Land the message within the first 5 to 10 seconds; the hook within 3.

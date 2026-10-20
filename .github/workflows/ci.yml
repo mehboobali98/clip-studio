@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright and ffmpeg
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Scripts parse
+        run: |
+          for s in skills/clip/scripts/*.sh; do bash -n "$s"; done
+          for s in skills/clip/scripts/*.mjs; do node --check "$s"; done
+      - name: Templates load, lint clean and render
+        run: |
+          for t in skills/clip/templates/*.html; do
+            node skills/clip/scripts/capture.mjs "$t" check
+            node skills/clip/scripts/capture.mjs "$t" lint
+            node skills/clip/scripts/capture.mjs "$t" keys "keys/$(basename "$t" .html)" 1 6 12
+            bash skills/clip/scripts/sheet.sh "keys/$(basename "$t" .html)" "keys/$(basename "$t" .html).png" 3 200
+          done
+          node skills/clip/scripts/capture.mjs skills/clip/templates/product-demo.html srt keys/demo.srt
+      - name: Plugin manifests parse
+        run: for j in .claude-plugin/*.json package.json skills/clip/templates/*.json; do python3 -m json.tool "$j" > /dev/null; done
