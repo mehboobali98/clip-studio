@@ -1,0 +1,653 @@
+<!doctype html>
+<!--
+  Product-demo template: a realistic app window under a moving camera.
+  Every frame is a pure function of t; scripts/capture.mjs renders it.
+
+  Adapt, top to bottom of the script:
+    captions        eyebrow / headline / timed subs per beat (scene time u)
+    buildTerm...    one build/seek pair per screen; lines appear at set times
+    cameraAt        [time, cx, cy, scale] keyframes; the camera moves the content
+                    inside the window (#inner), so the frame stays whole.
+                    Visible half-width is 383 / scale: keep left-aligned text in view
+    focusTargets    [from, to, x, y, w, h]: dim the rest, ring the line that matters
+    seekFrost       frosted pane that blurs what a viewer should know is hidden
+    buildPop        a number lifted out of the window, on a dark backing
+    HOOK            seconds of opening type before the window swoops in
+    seekWin3d       3D swoop in, page turns at scene changes, tilt away at the end
+  Data on screen is made up (#12345, example.com). Never real tickets, code or customers.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Product demo template</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=block">
+<style>
+  html, body { margin: 0; background: #0A0C10; }
+  body { width: 1080px; height: 1350px; overflow: hidden; }
+  svg { display: block; }
+  #bg, #persp, #top { position: absolute; left: 0; top: 0; width: 1080px; height: 1350px; }
+  #bg { overflow: hidden; background: radial-gradient(1200px 900px at 50% -8%, #1E2633 0%, #121720 45%, #0A0C10 75%); }
+  .blob { position: absolute; border-radius: 50%; filter: blur(70px); }
+  #vig { position: absolute; inset: 0; background: radial-gradient(900px 1100px at 50% 50%, transparent 55%, rgba(4,5,8,0.85) 100%); }
+  #persp { perspective: 1500px; perspective-origin: 50% 46%; }
+  #win3d { position: absolute; inset: 0; transform-style: preserve-3d; transform-origin: 50% 60%; will-change: transform; }
+  .ui { font-family: -apple-system, "SF Pro Display", "Inter", system-ui, sans-serif; }
+  .mono { font-family: Menlo, "SF Mono", "JetBrains Mono", monospace; }
+</style>
+</head>
+<body>
+<div id="bg">
+  <div class="blob" id="b0"></div><div class="blob" id="b1"></div><div class="blob" id="b2"></div>
+  <div id="vig"></div>
+</div>
+<div id="persp"><div id="win3d">
+<svg id="svg" width="1080" height="1350" viewBox="0 0 800 1000">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#000" flood-opacity="0.6"/>
+    </filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="glowLine" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="5"/></filter>
+    <filter id="frostBlur" x="-5%" y="-30%" width="110%" height="160%"><feGaussianBlur id="frostStd" stdDeviation="0"/></filter>
+    <clipPath id="below"><rect x="0" y="236" width="800" height="764"/></clipPath>
+    <clipPath id="screen"><rect x="17" y="287" width="766" height="672" rx="2"/></clipPath>
+    <clipPath id="winClip"><rect x="16" y="250" width="768" height="710" rx="14"/></clipPath>
+    <linearGradient id="sweepGrad" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="focusMask" maskUnits="userSpaceOnUse" x="0" y="0" width="800" height="1000">
+      <rect x="0" y="0" width="800" height="1000" fill="#FFFFFF"/>
+      <rect id="hole" x="0" y="0" width="0" height="0" rx="8" fill="#000000"/>
+    </mask>
+  </defs>
+  <g clip-path="url(#below)"><g id="world"></g></g>
+</svg>
+</div></div>
+<svg id="top" width="1080" height="1350" viewBox="0 0 800 1000">
+  <defs id="topDefs"></defs>
+  <g id="hook"></g>
+  <g id="captions"></g>
+  <g id="pop"></g>
+  <g id="end"></g>
+</svg>
+<script>
+  const C = {
+    text: '#E8E9EB', dim: '#8A909A', faint: '#4E5562', frame: '#14171D', bar: '#1B1F26', border: '#2A2F38',
+    accent: '#D97757', ok: '#5FB97A', key: '#8CC4F0', str: '#E0A47A', num: '#B5CEA8', prompt: '#6FB6D9',
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const params = new URLSearchParams(location.search);
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const span = (t, start, length) => clamp((t - start) / length);
+  const ease = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+  const easeOut = (p) => 1 - Math.pow(1 - p, 3);
+  const rng = (seed) => () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/ /g, '&#160;');
+  const el = (tag, attrs = {}, parent) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (parent) parent.appendChild(node);
+    return node;
+  };
+  const keyframes = (keys, t) => {
+    if (t <= keys[0][0]) return keys[0].slice(1);
+    for (let i = 1; i < keys.length; i++) {
+      const [t1, ...b] = keys[i], [t0, ...a] = keys[i - 1];
+      if (t <= t1) { const p = ease((t - t0) / (t1 - t0)); return a.map((v, k) => lerp(v, b[k], p)); }
+    }
+    return keys[keys.length - 1].slice(1);
+  };
+
+  // Human typing: each character lands after a seeded, uneven gap.
+  const typingTimes = (text, seed, gap = 0.042) => {
+    const r = rng(seed);
+    let at = 0;
+    return [...text].map((ch) => (at += gap * (0.6 + r() * 0.9) * (ch === ' ' ? 1.4 : 1)));
+  };
+  const typed = (text, times, t, start) => {
+    let n = 0;
+    while (n < times.length && start + times[n] <= t) n++;
+    return text.slice(0, n);
+  };
+
+  // A line of coloured runs: [[text, colour], ...].
+  const runs = (parts) => parts.map(([s, c, w]) => `<tspan fill="${c}"${w ? ` font-weight="${w}"` : ''}>${esc(s)}</tspan>`).join('');
+  const json = (line) => {
+    const out = [];
+    const re = /("[^"]*")(\s*:)?|(-?\d+(?:\.\d+)?)|([{}\[\],:]|\s+|[^"\d{}\[\],:\s]+)/g;
+    let m;
+    while ((m = re.exec(line))) {
+      if (m[1] && m[2]) out.push([m[1], C.key], [m[2], C.dim]);
+      else if (m[1]) out.push([m[1], C.str]);
+      else if (m[3]) out.push([m[3], C.num]);
+      else out.push([m[4], C.dim]);
+    }
+    return out;
+  };
+
+  const LH = 24;
+  const X = 64;
+  const SPIN = ['·', '✢', '✳', '✶', '✻', '✽'];
+
+  const film = {
+    duration: 28.4,
+    HOOK: 2.4,
+
+    build() {
+      this.buildHook();
+      this.buildCaptions();
+      this.buildWorld();
+      this.buildPop();
+      this.buildEnd();
+    },
+
+    // --------------------------------------------------------------- captions
+    captions: [
+      { from: 0.1, to: 6.75, eyebrow: 'RMINE', head: 'Redmine, from your terminal.', subs: [[0.5, 'A Go CLI for developers and coding agents.'], [4.75, 'Every command can return JSON.']] },
+      { from: 6.95, to: 10.55, eyebrow: 'RMINE-SKILLS', head: 'Six workflows inside Claude Code.', subs: [[7.25, 'A Claude Code plugin built on rmine.']] },
+      { from: 10.75, to: 18.75, eyebrow: '/ESTIMATE', head: 'Three agents. One estimate.', subs: [[11.05, 'One audits the spec, one prices the code, one reviews.'], [14.85, 'The reviewer never sees how the estimate was made.']] },
+      { from: 18.95, to: 22.35, eyebrow: '/CALIBRATE', head: 'Then it checks itself.', subs: [[19.25, 'Past estimates against the hours actually logged.']] },
+    ],
+
+    buildCaptions() {
+      const g = $('captions');
+      this.captionNodes = this.captions.map((c, i) => {
+        const f = el('filter', { id: `cb-${i}`, x: '-10%', y: '-40%', width: '120%', height: '180%' }, $('topDefs'));
+        el('feGaussianBlur', { id: `cbs-${i}`, stdDeviation: 0 }, f);
+        const wrap = el('g', { id: `cap-${i}`, filter: `url(#cb-${i})` }, g);
+        el('text', { class: 'mono', 'font-size': 14, 'letter-spacing': 2.6, x: 400, y: 88, 'text-anchor': 'middle', fill: C.accent }, wrap).textContent = c.eyebrow;
+        el('text', { class: 'ui', 'font-size': 41, 'font-weight': 650, 'letter-spacing': -0.6, x: 400, y: 144, 'text-anchor': 'middle', fill: C.text }, wrap).textContent = c.head;
+        const subs = c.subs.map(([at, text]) => {
+          const n = el('text', { class: 'ui', 'font-size': 21, x: 400, y: 186, 'text-anchor': 'middle', fill: C.dim }, wrap);
+          n.textContent = text;
+          return { at, n };
+        });
+        return { ...c, wrap, subs };
+      });
+    },
+
+    seekCaptions(t) {
+      this.captionNodes.forEach((c, i) => {
+        const inP = easeOut(span(t, c.from, 0.55)), outP = ease(span(t, c.to, 0.3));
+        $(`cbs-${i}`).setAttribute('stdDeviation', (7 * (1 - inP) + 7 * outP).toFixed(2));
+        c.wrap.setAttribute('opacity', (inP * (1 - outP)).toFixed(3));
+        c.wrap.setAttribute('transform', `translate(0 ${(10 * (1 - inP) - 10 * outP).toFixed(2)})`);
+        c.subs.forEach((s, k) => {
+          const next = c.subs[k + 1];
+          const a = easeOut(span(t, s.at, 0.4)), b = next ? ease(span(t, next.at - 0.3, 0.3)) : 0;
+          s.n.setAttribute('opacity', (a * (1 - b)).toFixed(3));
+          s.n.setAttribute('transform', `translate(0 ${(8 * (1 - a) - 8 * b).toFixed(2)})`);
+        });
+      });
+    },
+
+    // ------------------------------------------------------------------ world
+    buildWorld() {
+      const w = $('world');
+      el('rect', { x: 16, y: 250, width: 768, height: 710, rx: 14, fill: C.frame, stroke: C.border, 'stroke-width': 1, filter: 'url(#shadow)' }, w);
+      el('path', { d: 'M30 250 H770 A14 14 0 0 1 784 264 V286 H16 V264 A14 14 0 0 1 30 250 Z', fill: C.bar }, w);
+      el('line', { x1: 16, y1: 286.5, x2: 784, y2: 286.5, stroke: C.border, 'stroke-width': 1 }, w);
+      ['#FF5F57', '#FEBC2E', '#28C840'].forEach((c, i) => el('circle', { cx: 38 + i * 20, cy: 268, r: 6, fill: c }, w));
+      el('text', { id: 'winTitle', class: 'ui', 'font-size': 13, x: 400, y: 272.5, 'text-anchor': 'middle', fill: C.dim }, w);
+      const screen = el('g', { id: 'inner' }, el('g', { 'clip-path': 'url(#screen)' }, w));
+      this.scenes = {
+        term: el('g', { id: 'sTerm' }, screen),
+        claude: el('g', { id: 'sClaude' }, screen),
+        estimate: el('g', { id: 'sEstimate' }, screen),
+        calibrate: el('g', { id: 'sCalibrate' }, screen),
+      };
+      this.buildTerm();
+      this.buildClaude();
+      this.buildEstimate();
+      this.buildCalibrate();
+      this.buildFx(w, screen);
+    },
+
+    line(parent, id, y, size = 16) {
+      return el('text', { id, class: 'mono', 'font-size': size, x: X, y }, parent);
+    },
+
+    buildTerm() {
+      const g = this.scenes.term;
+      this.cmd1 = 'rmine issue view 12345';
+      this.cmd2 = 'rmine issue view 12345 -o json';
+      this.t1 = typingTimes(this.cmd1, 11);
+      this.t2 = typingTimes(this.cmd2, 12);
+      this.line(g, 'p1', 322);
+      this.view = [
+        [['#12345 Allow exporting widgets from the listing', C.text, 700]],
+        [['URL:      ', C.dim], ['https://redmine.example.com/issues/12345', C.prompt]],
+        [['Project:  ', C.dim], ['Widgets', C.text]],
+        [['Tracker:  ', C.dim], ['Feature', C.text]],
+        [['Status:   ', C.dim], ['In Progress', C.text]],
+        [['Priority: ', C.dim], ['Normal', C.text]],
+        [['Assignee: ', C.dim], ['A. Engineer', C.text]],
+        [['Estimate: ', C.dim], ['6.00h', C.text]],
+      ];
+      this.view.forEach((_, i) => this.line(g, `v${i}`, 350 + i * LH));
+      this.line(g, 'p2', 350 + 9 * LH);
+      this.jsonLines = [
+        '{',
+        '  "id": 12345,',
+        '  "subject": "Allow exporting widgets from the listing",',
+        '  "status": { "id": 2, "name": "In Progress" },',
+        '  "assigned_to": { "id": 7, "name": "A. Engineer" },',
+        '  "estimated_hours": 6',
+        '}',
+      ];
+      this.jsonLines.forEach((_, i) => this.line(g, `j${i}`, 350 + 10 * LH + 4 + i * LH));
+      this.line(g, 'p3', 350 + 18 * LH + 4);
+      el('rect', { id: 'tcaret', x: 0, y: 0, width: 9.6, height: 19, fill: C.text, opacity: 0.85 }, g);
+    },
+
+    prompt(cmd) {
+      return runs([['~/product ', C.prompt], ['$ ', C.ok], [cmd, C.text]]);
+    },
+
+    seekTerm(t) {
+      const g = this.scenes.term;
+      g.setAttribute('opacity', (1 - ease(span(t, 6.75, 0.35))).toFixed(3));
+      const c1 = typed(this.cmd1, this.t1, t, 0.85);
+      $('p1').innerHTML = this.prompt(c1);
+      this.view.forEach((parts, i) => {
+        const on = t >= 0.85 + this.t1[this.t1.length - 1] + 0.35 + i * 0.045;
+        $(`v${i}`).innerHTML = on ? runs(parts) : '';
+      });
+      const start2 = 3.05;
+      const show2 = t >= start2 - 0.35;
+      const c2 = typed(this.cmd2, this.t2, t, start2);
+      $('p2').innerHTML = show2 ? this.prompt(c2) : '';
+      const done2 = start2 + this.t2[this.t2.length - 1] + 0.35;
+      this.jsonLines.forEach((line, i) => { $(`j${i}`).innerHTML = t >= done2 + i * 0.05 ? runs(json(line)) : ''; });
+      // The caret sits on whichever prompt is live, and blinks when idle.
+      const live = !show2 ? { y: 322, n: c1.length } : t < done2 + 0.5 ? { y: 350 + 9 * LH, n: c2.length } : { y: 350 + 18 * LH + 4, n: 0 };
+      $('p3').innerHTML = t >= done2 + 0.5 ? this.prompt('') : '';
+      const typing = (t > 0.85 && c1.length < this.cmd1.length) || (show2 && t > start2 && c2.length < this.cmd2.length);
+      const caret = $('tcaret');
+      caret.setAttribute('x', (X + (12 + live.n) * 9.63).toFixed(1));
+      caret.setAttribute('y', (live.y - 15).toFixed(1));
+      caret.setAttribute('opacity', (typing || Math.floor(t * 1.8) % 2 === 0 ? 0.85 : 0).toFixed(2));
+    },
+
+    buildClaude() {
+      const g = this.scenes.claude;
+      el('rect', { x: 64, y: 306, width: 672, height: 92, rx: 8, fill: 'none', stroke: C.accent, 'stroke-width': 1.2 }, g);
+      el('text', { class: 'mono', 'font-size': 16, x: 84, y: 336 }, g).innerHTML = runs([['✻ ', C.accent], ['Welcome to Claude Code!', C.text, 700]]);
+      el('text', { class: 'mono', 'font-size': 14, x: 106, y: 362, fill: C.dim }, g).textContent = '/help for help, /status for your current setup';
+      el('text', { class: 'mono', 'font-size': 14, x: 106, y: 384, fill: C.dim }, g).textContent = 'cwd: ~/product';
+      el('rect', { id: 'inputBox', x: 64, y: 414, width: 672, height: 46, rx: 8, fill: 'none', stroke: C.faint, 'stroke-width': 1.2 }, g);
+      el('text', { id: 'inputText', class: 'mono', 'font-size': 16, x: 82, y: 443 }, g);
+      el('rect', { id: 'ccaret', x: 0, y: 428, width: 9.6, height: 19, fill: C.text, opacity: 0.85 }, g);
+      el('text', { id: 'hint', class: 'mono', 'font-size': 13, x: 82, y: 484, fill: C.faint }, g).textContent = '? for shortcuts';
+      this.menu = [
+        ['/estimate', 'Estimate a Redmine ticket, frontend and backend'],
+        ['/spec-interview', "Turn a spec's gaps into questions on the ticket"],
+        ['/log', "Draft the day's time entries from git"],
+        ['/calibrate', 'Check past estimates against logged hours'],
+        ['/postmortem', "See where a finished ticket's hours went"],
+        ['/sprint-plan', "Check a sprint against each person's capacity"],
+      ];
+      el('rect', { id: 'menuHi', x: 70, y: 0, width: 660, height: 28, rx: 5, fill: '#232832' }, g);
+      this.menu.forEach((_, i) => el('text', { id: `m${i}`, class: 'mono', 'font-size': 15, x: 82, y: 496 + i * 30 }, g));
+      el('text', { id: 'menuFoot', class: 'mono', 'font-size': 12.5, x: 82, y: 496 + 6 * 30 + 4, fill: C.faint }, g).textContent = 'rmine-skills · 6 commands';
+      this.inputCmd = '/estimate 12345';
+    },
+
+    seekClaude(t) {
+      const g = this.scenes.claude;
+      const inP = ease(span(t, 6.85, 0.4)), outP = ease(span(t, 10.55, 0.35));
+      g.setAttribute('opacity', (inP * (1 - outP)).toFixed(3));
+      g.setAttribute('transform', `translate(0 ${(-60 * outP).toFixed(1)})`);
+      // "/" opens the menu; the highlight walks it, comes back, and runs /estimate.
+      const slash = 7.75;
+      let text = '';
+      if (t >= slash) text = '/';
+      const walk = [[8.15, 1], [8.45, 2], [8.75, 3], [9.05, 4], [9.35, 5], [9.75, 0]];
+      let hi = 0;
+      walk.forEach(([at, row]) => { if (t >= at) hi = row; });
+      const pick = 9.95;
+      const rest = ' 12345';
+      if (t >= pick) text = '/estimate' + typed(rest, typingTimes(rest, 21), t, pick + 0.1);
+      const menuOn = t >= slash && t < pick;
+      $('inputText').innerHTML = runs([['> ', C.dim], [text, text.startsWith('/estimate') ? C.text : C.text]]);
+      $('ccaret').setAttribute('x', (82 + (2 + text.length) * 9.63).toFixed(1));
+      $('ccaret').setAttribute('opacity', ((t > 7.2 && t < 7.75) || Math.floor(t * 1.8) % 2 === 0 || (t > pick && t < pick + 0.5) ? 0.85 : 0).toFixed(2));
+      $('hint').setAttribute('opacity', menuOn ? 0 : 1);
+      const menuIn = easeOut(span(t, slash, 0.2)) * (menuOn ? 1 : 0);
+      this.menu.forEach(([name, desc], i) => {
+        const node = $(`m${i}`);
+        const pad = ' '.repeat(Math.max(1, 17 - name.length));
+        node.innerHTML = runs([[name, i === hi ? C.accent : C.text, i === hi ? 700 : 400], [pad + desc, i === hi ? C.text : C.dim]]);
+        node.setAttribute('opacity', menuIn.toFixed(3));
+      });
+      let hiY = 476, prevRow = 0;
+      for (const [at, row] of walk) {
+        if (t < at - 0.12) break;
+        hiY = lerp(476 + prevRow * 30, 476 + row * 30, ease(span(t, at - 0.12, 0.12)));
+        prevRow = row;
+      }
+      $('menuHi').setAttribute('y', hiY.toFixed(1));
+      $('menuHi').setAttribute('opacity', menuIn.toFixed(3));
+      $('menuFoot').setAttribute('opacity', (0.9 * menuIn).toFixed(3));
+    },
+
+    buildEstimate() {
+      const g = this.scenes.estimate;
+      this.est = [
+        { y: 322, at: 10.75, parts: [['> ', C.dim], ['/estimate 12345', C.text]], band: true },
+        { y: 362, at: 11.15, parts: [['● ', C.ok], ['Bash', C.text, 700], ['(rmine issue view 12345 --comments -o json)', C.dim]] },
+        { y: 386, at: 11.45, parts: [['  ⎿  ', C.faint], ['#12345 Allow exporting widgets from the listing', C.dim]] },
+        { y: 426, at: 11.75, agent: 'spec-auditor', task: 'Audit the spec for #12345', done: 12.85, result: 'Done · READY, no blocking gaps', spin: 'Auditing the spec' },
+        { y: 490, at: 13.0, agent: 'effort-estimator', task: 'Price #12345 against the code', done: 14.55, result: 'Done · read 14 files', spin: 'Pricing against the code', count: true },
+        { y: 554, at: 14.7, agent: 'estimate-validator', task: 'Review the estimate blind', done: 15.85, result: 'Done · total holds, derivation never seen', spin: 'Reviewing blind' },
+        { y: 618, at: 16.05, parts: [['● ', C.ok], ['Wrote ', C.text], ['estimates/estimate-12345.md', C.prompt]] },
+      ];
+      el('rect', { id: 'band', x: 52, y: 304, width: 696, height: 28, rx: 4, fill: '#1A1E25' }, g);
+      this.frosted = [];
+      this.est.forEach((l, i) => {
+        const line = this.line(g, `e${i}`, l.y);
+        if (i === 3 || i === 4) this.frosted.push(line);
+        if (l.agent) { const r = this.line(g, `e${i}r`, l.y + LH); if (i === 3 || i === 4) this.frosted.push(r); }
+      });
+      this.line(g, 'spinner', 0, 15);
+      const box = el('g', { id: 'estBox' }, g);
+      el('rect', { x: 64, y: 640, width: 672, height: 222, rx: 8, fill: '#101318', stroke: C.border, 'stroke-width': 1 }, box);
+      el('rect', { id: 'totalHi', x: 72, y: 819, width: 656, height: 30, rx: 5, fill: C.accent, opacity: 0 }, box);
+      this.block = [
+        [672, [['Task:        ', C.dim], ['Allow exporting widgets from the listing', C.text]]],
+        [696, [['Confidence:  ', C.dim], ['High ', C.text], ['(every line from an anchor row)', C.dim]]],
+        [720, [['Mode:        ', C.dim], ['agent-driven', C.text], ['   Range: ', C.dim], ['5–9 hrs', C.text]]],
+        [752, [['1. Backend (2 hrs)', C.text]]],
+        [776, [['2. Frontend (1 hr)', C.text]]],
+        [800, [['3. Demo + PR Reviews + Testing (3 hrs)', C.text]]],
+        [840, [['4. Total (6 hrs ~ 2 points)', C.text, 700]]],
+      ];
+      this.block.forEach(([y], i) => el('text', { id: `b${i}`, class: 'mono', 'font-size': 16, x: 84, y }, box));
+      el('rect', { x: 64, y: 896, width: 672, height: 46, rx: 8, fill: 'none', stroke: C.faint, 'stroke-width': 1.2 }, g);
+      el('text', { class: 'mono', 'font-size': 16, x: 82, y: 925, fill: C.dim }, g).textContent = '>';
+    },
+
+    seekEstimate(t) {
+      const g = this.scenes.estimate;
+      const inP = ease(span(t, 10.6, 0.35)), outP = ease(span(t, 18.75, 0.35));
+      g.setAttribute('opacity', (inP * (1 - outP)).toFixed(3));
+      $('band').setAttribute('opacity', inP.toFixed(3));
+      let spinner = null;
+      this.est.forEach((l, i) => {
+        const node = $(`e${i}`);
+        if (t < l.at) { node.innerHTML = ''; if (l.agent) $(`e${i}r`).innerHTML = ''; return; }
+        if (!l.agent) { node.innerHTML = runs(l.parts); return; }
+        const done = t >= l.done;
+        node.innerHTML = runs([['● ', done ? C.ok : C.text], [l.agent, C.text, 700], [`(${l.task})`, C.dim]]);
+        if (done) $(`e${i}r`).innerHTML = runs([['  ⎿  ', C.faint], [l.result, C.dim]]);
+        else {
+          const files = l.count ? Math.max(1, Math.round(14 * span(t, l.at + 0.2, l.done - l.at - 0.35))) : 0;
+          $(`e${i}r`).innerHTML = l.count ? runs([['  ⎿  ', C.faint], [`Read ${files} file${files === 1 ? '' : 's'}…`, C.faint]]) : '';
+          spinner = { y: l.y + LH + (l.count ? LH : 0) + 2, text: l.spin };
+        }
+      });
+      const sp = $('spinner');
+      if (spinner) {
+        const glyph = SPIN[Math.floor(t * 10) % SPIN.length];
+        sp.setAttribute('y', (spinner.y + 4).toFixed(1));
+        sp.innerHTML = runs([[glyph + ' ', C.accent], [spinner.text + '…', C.accent], [' (esc to interrupt)', C.faint]]);
+      } else sp.innerHTML = '';
+      const boxIn = easeOut(span(t, 16.3, 0.4));
+      $('estBox').setAttribute('opacity', boxIn.toFixed(3));
+      $('estBox').setAttribute('transform', `translate(0 ${(12 * (1 - boxIn)).toFixed(1)})`);
+      this.block.forEach(([, parts], i) => { $(`b${i}`).innerHTML = t >= 16.45 + i * 0.09 ? runs(parts) : ''; });
+      const hi = easeOut(span(t, 17.25, 0.4));
+      $('totalHi').setAttribute('opacity', (0.16 * hi).toFixed(3));
+    },
+
+    buildCalibrate() {
+      const g = this.scenes.calibrate;
+      this.cal = [
+        [322, [['> ', C.dim], ['/calibrate estimates/', C.text]], 19.05],
+        [362, [['● ', C.ok], ['Bash', C.text, 700], ['(python3 actuals.py estimates/)', C.dim]], 19.45],
+        [396, [['    issue    est  actual  ratio  mode', C.faint]], 19.8],
+        [420, [['    12345      6     5.5   0.92  ', C.text], ['agent-driven', C.dim]], 19.86],
+        [444, [['    12361     10     9.0   0.90  ', C.text], ['agent-driven', C.dim]], 19.92],
+        [468, [['    12377      4     4.5   1.12  ', C.text], ['agent-driven', C.dim]], 19.98],
+        [504, [['    agent-driven: 3 tickets', C.text]], 20.1],
+        [528, [['      consistent  ', C.dim], ['3 of 3 within ±25% of the median', C.text]], 20.18],
+        [552, [['      bar         ', C.dim], ['not met: 3 tickets; the bar needs 20+', C.accent]], 20.26],
+        [596, [['● ', C.ok], ['Too few tickets to change the rubric yet.', C.text]], 20.75],
+        [620, [['  Keep committing estimates; each finished ticket counts.', C.dim]], 20.85],
+      ];
+      el('rect', { id: 'band2', x: 52, y: 304, width: 696, height: 28, rx: 4, fill: '#1A1E25' }, g);
+      this.cal.forEach(([y], i) => this.line(g, `c${i}`, y));
+      el('rect', { x: 64, y: 896, width: 672, height: 46, rx: 8, fill: 'none', stroke: C.faint, 'stroke-width': 1.2 }, g);
+      el('text', { class: 'mono', 'font-size': 16, x: 82, y: 925, fill: C.dim }, g).textContent = '>';
+    },
+
+    seekCalibrate(t) {
+      const g = this.scenes.calibrate;
+      const inP = ease(span(t, 18.9, 0.35)), outP = ease(span(t, 22.35, 0.4));
+      g.setAttribute('opacity', (inP * (1 - outP)).toFixed(3));
+      this.cal.forEach(([, parts, at], i) => { $(`c${i}`).innerHTML = t >= at ? runs(parts) : ''; });
+    },
+
+    cameraAt(t) {
+      // Zoomed in enough to read on a phone, centred left of middle because
+      // terminal text is left-aligned, and closer still on the lines that matter.
+      return keyframes([
+        [0, 338, 548, 1.3], [2.7, 338, 548, 1.3], [3.5, 338, 590, 1.3], [4.75, 338, 600, 1.3],
+        [5.55, 330, 660, 1.4], [6.55, 330, 664, 1.41], [7.3, 400, 540, 1.12],
+        [7.95, 400, 540, 1.12], [8.45, 360, 560, 1.28], [9.95, 360, 562, 1.29], [10.65, 335, 560, 1.32],
+        [11.6, 335, 560, 1.32], [12.3, 335, 565, 1.33], [14.5, 335, 570, 1.34], [15.1, 320, 560, 1.4], [16.05, 320, 562, 1.41],
+        [16.75, 400, 740, 1.12], [18.4, 400, 744, 1.13], [19.05, 340, 560, 1.3],
+        [20.25, 340, 560, 1.3], [20.8, 335, 545, 1.4], [21.95, 335, 548, 1.41], [22.6, 400, 623, 1.0], [26, 400, 623, 1.0],
+      ], t);
+    },
+
+    // ---------------------------------------------------------------- hook
+    buildHook() {
+      const g = $('hook');
+      this.hookLines = [['Redmine tickets.', C.text, 0.12], ['Claude Code.', C.text, 0.55], ['One workflow.', C.accent, 0.98]].map(([text, fill, at], i) => {
+        const f = el('filter', { id: `hb-${i}`, x: '-10%', y: '-50%', width: '120%', height: '200%' }, $('topDefs'));
+        el('feGaussianBlur', { id: `hbs-${i}`, stdDeviation: 0 }, f);
+        const n = el('text', { class: 'ui', 'font-size': 60, 'font-weight': 700, 'letter-spacing': -1.6, x: 400, y: 432 + i * 76, 'text-anchor': 'middle', fill, filter: `url(#hb-${i})` }, g);
+        n.textContent = text;
+        return { n, at, i };
+      });
+    },
+
+    seekHook(t) {
+      const g = $('hook');
+      const exit = ease(span(t, 1.85, 0.6));
+      g.setAttribute('transform', `translate(400 508) scale(${(1 + 0.28 * exit).toFixed(4)}) translate(-400 -508)`);
+      g.setAttribute('opacity', (1 - exit).toFixed(3));
+      this.hookLines.forEach(({ n, at, i }) => {
+        const p = easeOut(span(t, at, 0.5));
+        $(`hbs-${i}`).setAttribute('stdDeviation', (12 * (1 - p) + 10 * exit).toFixed(2));
+        n.setAttribute('opacity', p.toFixed(3));
+        n.setAttribute('transform', `translate(0 ${(18 * (1 - p)).toFixed(1)})`);
+      });
+    },
+
+    // ------------------------------------------------------- depth and light
+    seekBg(t) {
+      const pulse = (at, len) => { const p = span(t, at, len); return p > 0 && p < 1 ? Math.sin(Math.PI * p) : 0; };
+      const glow = pulse(2.0, 1.6) + pulse(19.6, 1.8) + pulse(24.8, 2.4) * 0.8;
+      [
+        ['b0', 230 + 90 * Math.sin(t * 0.21), 1170 + 60 * Math.cos(t * 0.17), 1050, '#D97757', 0.2 + 0.18 * glow],
+        ['b1', 880 + 70 * Math.sin(t * 0.18 + 1), 120 + 60 * Math.cos(t * 0.23), 1150, '#2B4C7E', 0.55 + 0.1 * glow],
+        ['b2', 540 + 240 * Math.sin(t * 0.12), 760 + 80 * Math.cos(t * 0.15), 820, '#1F6F7A', 0.12 + 0.08 * glow],
+      ].forEach(([id, x, y, size, colour, o]) => {
+        const b = $(id);
+        b.style.width = b.style.height = `${size}px`;
+        b.style.transform = `translate(${(x - size / 2).toFixed(1)}px, ${(y - size / 2).toFixed(1)}px)`;
+        b.style.background = `radial-gradient(circle, ${colour} 0%, transparent 68%)`;
+        b.style.opacity = o.toFixed(3);
+      });
+    },
+
+    seekWin3d(u) {
+      const turn = (at, len) => { const p = span(u, at, len); return p > 0 && p < 1 ? Math.sin(Math.PI * ease(p)) : 0; };
+      const swoop = 1 - Math.pow(1 - clamp((u + 0.1) / 1.25), 4);
+      const exit = ease(span(u, 22.3, 0.95));
+      const t1 = turn(6.8, 0.95), t2 = turn(10.5, 0.9), t3 = turn(18.8, 0.95);
+      const rx = lerp(44, 0, swoop) + 1.1 * Math.sin(u * 0.45) + 7 * t2 + 34 * exit;
+      const ry = lerp(-18, 0, swoop) + 1.5 * Math.sin(u * 0.33 + 1) - 10 * t1 + 10 * t3;
+      const rz = lerp(6, 0, swoop);
+      const tz = lerp(-1150, 0, swoop) - 150 * (t1 + t3) - 120 * t2 - 760 * exit;
+      const ty = lerp(280, 0, swoop) + 140 * exit;
+      const w = $('win3d');
+      w.style.transform = `translateY(${ty.toFixed(1)}px) translateZ(${tz.toFixed(1)}px) rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg) rotateZ(${rz.toFixed(2)}deg)`;
+      w.style.opacity = (clamp(swoop * 2.2) * (1 - exit)).toFixed(3);
+    },
+
+    buildFx(w, screen) {
+      const focus = el('g', { id: 'focus' }, screen);
+      el('rect', { x: 41, y: 287, width: 718, height: 672, fill: '#050609', mask: 'url(#focusMask)', id: 'dim' }, focus);
+      el('rect', { id: 'ringGlow', rx: 8, fill: 'none', stroke: C.accent, 'stroke-width': 3, filter: 'url(#glowLine)' }, focus);
+      el('rect', { id: 'ring', rx: 8, fill: 'none', stroke: C.accent, 'stroke-width': 1.4 }, focus);
+      const pane = el('g', { id: 'pane' }, screen);
+      el('rect', { x: 52, y: 406, width: 696, height: 128, rx: 10, fill: '#FFFFFF', 'fill-opacity': 0.045, stroke: '#FFFFFF', 'stroke-opacity': 0.16, 'stroke-width': 1 }, pane);
+      el('line', { x1: 62, y1: 407, x2: 738, y2: 407, stroke: '#FFFFFF', 'stroke-opacity': 0.35, 'stroke-width': 1 }, pane);
+      el('rect', { x: 62, y: 395, width: 206, height: 22, rx: 11, fill: '#262B34', stroke: '#FFFFFF', 'stroke-opacity': 0.22, 'stroke-width': 1 }, pane);
+      el('text', { class: 'mono', 'font-size': 12.5, x: 165, y: 410.5, 'text-anchor': 'middle', fill: C.text }, pane).textContent = 'hidden from the reviewer';
+      const sweep = el('g', { 'clip-path': 'url(#winClip)' }, w);
+      el('rect', { id: 'sweep', x: 0, y: 200, width: 220, height: 820, fill: 'url(#sweepGrad)', opacity: 0 }, sweep);
+    },
+
+    focusTargets: [
+      [4.95, 6.5, 52, 573, 588, 176],
+      [10.0, 10.5, 60, 410, 680, 54],
+      [15.15, 16.05, 52, 535, 540, 52],
+      [17.3, 18.5, 70, 817, 660, 34],
+      [20.75, 22.05, 52, 510, 600, 50],
+    ],
+
+    seekFocus(u) {
+      let best = null, level = 0;
+      for (const [a, b, x, y, w, h] of this.focusTargets) {
+        const p = easeOut(span(u, a, 0.35)) * (1 - ease(span(u, b, 0.35)));
+        if (p > level) { level = p; best = { x, y, w, h }; }
+      }
+      $('focus').setAttribute('opacity', level > 0.001 ? 1 : 0);
+      if (!best) return;
+      const grow = 6 * (1 - level);
+      const box = { x: best.x - grow, y: best.y - grow, width: best.w + 2 * grow, height: best.h + 2 * grow };
+      for (const id of ['hole', 'ring', 'ringGlow']) for (const [k, v] of Object.entries(box)) $(id).setAttribute(k, v.toFixed(1));
+      $('dim').setAttribute('opacity', (0.62 * level).toFixed(3));
+      $('ring').setAttribute('opacity', (0.95 * level).toFixed(3));
+      $('ringGlow').setAttribute('opacity', (0.55 * level).toFixed(3));
+    },
+
+    seekFrost(u) {
+      const inP = easeOut(span(u, 14.75, 0.4)), outP = ease(span(u, 16.0, 0.35));
+      const f = inP * (1 - outP);
+      $('frostStd').setAttribute('stdDeviation', (2.6 * f).toFixed(2));
+      this.frosted.forEach((n) => { if (f > 0.01) n.setAttribute('filter', 'url(#frostBlur)'); else n.removeAttribute('filter'); });
+      $('pane').setAttribute('opacity', f.toFixed(3));
+      $('pane').setAttribute('transform', `translate(0 ${(-26 * (1 - inP) - 20 * outP).toFixed(1)})`);
+    },
+
+    seekSweep(u) {
+      let o = 0, x = -260;
+      for (const [at, len, peak] of [[0.55, 1.0, 0.13], [6.95, 0.8, 0.07], [10.65, 0.8, 0.07], [18.95, 0.8, 0.07], [17.3, 0.7, 0.06]]) {
+        const p = span(u, at, len);
+        if (p > 0 && p < 1) { o = peak * Math.sin(Math.PI * p); x = lerp(-60, 1120, ease(p)); }
+      }
+      $('sweep').setAttribute('x', x.toFixed(1));
+      $('sweep').setAttribute('opacity', o.toFixed(3));
+      $('sweep').setAttribute('transform', 'skewX(-18)');
+    },
+
+    // ---------------------------------------------------------------- pop-out
+    buildPop() {
+      const g = $('pop');
+      const f = el('filter', { id: 'pb', x: '-20%', y: '-40%', width: '140%', height: '180%' }, $('topDefs'));
+      el('feGaussianBlur', { id: 'pbs', stdDeviation: 0 }, f);
+      const plate = el('radialGradient', { id: 'plate', cx: 0.5, cy: 0.5, r: 0.5 }, $('topDefs'));
+      el('stop', { offset: 0, 'stop-color': '#050609', 'stop-opacity': 0.92 }, plate);
+      el('stop', { offset: 0.6, 'stop-color': '#050609', 'stop-opacity': 0.75 }, plate);
+      el('stop', { offset: 1, 'stop-color': '#050609', 'stop-opacity': 0 }, plate);
+      el('ellipse', { cx: 400, cy: 452, rx: 300, ry: 135, fill: 'url(#plate)' }, g);
+      const inner = el('g', { id: 'popInner', filter: 'url(#pb)' }, g);
+      el('text', { id: 'popNum', class: 'ui', 'font-size': 150, 'font-weight': 700, 'letter-spacing': -4, x: 372, y: 470, 'text-anchor': 'end', fill: C.text }, inner);
+      el('text', { class: 'ui', 'font-size': 58, 'font-weight': 600, x: 386, y: 470, fill: C.accent }, inner).textContent = 'hrs';
+      el('text', { class: 'mono', 'font-size': 18, x: 400, y: 512, 'text-anchor': 'middle', fill: C.dim }, inner).textContent = '~ 2 points · range 5–9 hrs';
+    },
+
+    seekPop(u) {
+      const inP = easeOut(span(u, 17.45, 0.55)), outP = ease(span(u, 18.35, 0.35));
+      const g = $('pop');
+      g.setAttribute('opacity', (inP * (1 - outP)).toFixed(3));
+      const s = lerp(0.86, 1, inP) * lerp(1, 1.08, outP);
+      g.setAttribute('transform', `translate(400 ${(452 + 26 * (1 - inP) - 20 * outP).toFixed(1)}) scale(${s.toFixed(4)}) translate(-400 -452)`);
+      $('pbs').setAttribute('stdDeviation', (10 * (1 - inP) + 8 * outP).toFixed(2));
+      $('popNum').textContent = String(Math.max(1, Math.round(6 * easeOut(span(u, 17.45, 0.6)))));
+    },
+
+    // -------------------------------------------------------------------- end
+    buildEnd() {
+      const g = $('end');
+      this.endIds = [['endTitle', 22.95], ['endSub', 23.3], ['endUrl', 23.55]];
+      this.endIds.forEach(([id], i) => {
+        const f = el('filter', { id: `eb-${i}`, x: '-10%', y: '-50%', width: '120%', height: '200%' }, $('topDefs'));
+        el('feGaussianBlur', { id: `ebs-${i}`, stdDeviation: 0 }, f);
+      });
+      el('text', { id: 'endTitle', class: 'ui', 'font-size': 56, 'font-weight': 700, 'letter-spacing': -1.2, x: 400, y: 470, 'text-anchor': 'middle', fill: C.text, filter: 'url(#eb-0)' }, g)
+        .innerHTML = `rmine <tspan fill="${C.accent}">+</tspan> rmine-skills`;
+      el('line', { id: 'endLine', x1: 400, y1: 496, x2: 400, y2: 496, stroke: C.accent, 'stroke-width': 2, 'stroke-linecap': 'round' }, g);
+      el('text', { id: 'endSub', class: 'ui', 'font-size': 24, x: 400, y: 538, 'text-anchor': 'middle', fill: C.dim, filter: 'url(#eb-1)' }, g).textContent = 'Free and open source · MIT';
+      el('text', { id: 'endUrl', class: 'mono', 'font-size': 20, x: 400, y: 596, 'text-anchor': 'middle', fill: C.accent, filter: 'url(#eb-2)' }, g).textContent = 'github.com/mehboobali98';
+    },
+
+    seekEnd(t) {
+      this.endIds.forEach(([id, at], i) => {
+        const p = easeOut(span(t, at, 0.7));
+        $(id).setAttribute('opacity', p.toFixed(3));
+        $(id).setAttribute('transform', `translate(0 ${(16 * (1 - p)).toFixed(1)})`);
+        $(`ebs-${i}`).setAttribute('stdDeviation', (9 * (1 - p)).toFixed(2));
+      });
+      const line = ease(span(t, 23.2, 0.8));
+      $('endLine').setAttribute('x1', (400 - 150 * line).toFixed(1));
+      $('endLine').setAttribute('x2', (400 + 150 * line).toFixed(1));
+      $('endLine').setAttribute('opacity', (0.9 * line).toFixed(3));
+    },
+
+    seek(t) {
+      const u = t - this.HOOK;
+      this.seekBg(t);
+      this.seekHook(t);
+      this.seekCaptions(u);
+      this.seekWin3d(u);
+      const [cx, cy, s] = this.cameraAt(u);
+      $('inner').setAttribute('transform', `translate(400 623) scale(${s.toFixed(4)}) translate(${-cx} ${(-cy).toFixed(1)})`);
+      $('winTitle').textContent = u < 6.95 ? 'Terminal · ~/product' : 'claude · ~/product';
+      this.seekTerm(u);
+      this.seekClaude(u);
+      this.seekEstimate(u);
+      this.seekCalibrate(u);
+      this.seekFocus(u);
+      this.seekFrost(u);
+      this.seekSweep(u);
+      this.seekPop(u);
+      this.seekEnd(u);
+    },
+  };
+
+  document.fonts.ready.then(() => {
+    film.build();
+    window.frame = { width: 1080, height: 1350 };
+    window.duration = film.duration;
+    window.seek = (t) => film.seek(t);
+    window.seek(Number(params.get('t') ?? film.duration));
+    window.ready = true;
+  });
+</script>
+</body>
+</html>

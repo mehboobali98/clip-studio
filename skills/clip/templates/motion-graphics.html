@@ -1,0 +1,803 @@
+<!doctype html>
+<!--
+  Motion-graphics template: one SVG world under a virtual camera, with kinetic
+  type, comets with trails, implosions, shockwaves, shatter and slow motion.
+  Every frame is a pure function of t, with seeded randomness; scripts/capture.mjs
+  renders it. See references/motion-graphics.md for the recipes.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Motion-graphics template</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,WONK@9..144,100..900,0..1&family=IBM+Plex+Mono:wght@400&family=IBM+Plex+Sans:wght@500&display=block">
+<style>
+  html, body { margin: 0; background: #0F1319; }
+  body { width: 1080px; height: 1350px; overflow: hidden; }
+  svg { display: block; }
+  .fr { font-family: "Fraunces", serif; font-variation-settings: "WONK" 1; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+  .sans { font-family: "IBM Plex Sans", sans-serif; font-weight: 500; }
+</style>
+</head>
+<body>
+<svg id="svg" width="1080" height="1350" viewBox="0 0 800 1000">
+  <defs>
+    <radialGradient id="warm" cx="90" cy="980" r="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8C5F1E" stop-opacity="0.5"/>
+      <stop offset="0.45" stop-color="#8C5F1E" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#8C5F1E" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cool" cx="800" cy="0" r="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2B4C7E" stop-opacity="0.6"/>
+      <stop offset="0.5" stop-color="#2B4C7E" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#2B4C7E" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="7"/></filter>
+    <filter id="glowWide" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="16"/></filter>
+    <radialGradient id="vig" cx="400" cy="500" r="680" gradientUnits="userSpaceOnUse">
+      <stop offset="0.45" stop-color="#07090C" stop-opacity="0"/>
+      <stop offset="1" stop-color="#07090C" stop-opacity="0.9"/>
+    </radialGradient>
+  </defs>
+  <rect width="800" height="1000" fill="#0F1319"/>
+  <rect width="800" height="1000" fill="url(#warm)"/>
+  <rect width="800" height="1000" fill="url(#cool)"/>
+  <g id="mesh"></g>
+  <g id="dust"></g>
+  <g id="stage"></g>
+  <g id="inside"></g>
+  <g id="end"></g>
+  <g id="hud"></g>
+  <g id="fx"></g>
+  <rect id="vignette" width="800" height="1000" fill="url(#vig)" opacity="0"/>
+  <rect id="flash" width="800" height="1000" fill="#E0A84E" opacity="0"/>
+  <rect width="800" height="7" fill="#E0A84E"/>
+</svg>
+<script>
+  const C = {
+    ink: '#0F1319', surface: '#202834', line: '#404A5A', lineStrong: '#556274', quiet: '#8590A2',
+    paper: '#F0EDE6', signal: '#E0A84E', teal: '#3FA7C0', heat: '#E0463C', go: '#00ADD8',
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const params = new URLSearchParams(location.search);
+  const $ = (id) => document.getElementById(id);
+
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const span = (t, start, length) => clamp((t - start) / length);
+  const easeOut = (p) => 1 - Math.pow(1 - p, 3);
+  const easeIn = (p) => p * p * p;
+  const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+  const smooth = (a, b, v) => { const p = clamp((v - a) / (b - a)); return p * p * (3 - 2 * p); };
+  const spring = (u, amp) => (u <= 0 ? amp : amp * Math.exp(-6 * u) * Math.cos(11 * u));
+  const bump = (t, start, length) => { const p = span(t, start, length); return p > 0 && p < 1 ? 1 - p : 0; };
+
+  const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+  const mix = (a, b, p) => {
+    const x = hex(a), y = hex(b);
+    return '#' + x.map((v, i) => Math.round(lerp(v, y[i], clamp(p))).toString(16).padStart(2, '0')).join('');
+  };
+  const rng = (seed) => () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+  const hash = (a, b = 0) => rng(a * 7919 + b * 104729 + 17)();
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/ /g, '&#160;');
+
+  const el = (tag, attrs = {}, parent) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (parent) parent.appendChild(node);
+    return node;
+  };
+  const cubic = (p0, p1, p2, p3, u) => {
+    const v = 1 - u;
+    return {
+      x: v * v * v * p0.x + 3 * v * v * u * p1.x + 3 * v * u * u * p2.x + u * u * u * p3.x,
+      y: v * v * v * p0.y + 3 * v * v * u * p1.y + 3 * v * u * u * p2.y + u * u * u * p3.y,
+    };
+  };
+  const camera = (cx, cy, s, r = 0) => `translate(400 500) rotate(${r.toFixed(3)}) scale(${s.toFixed(4)}) translate(${(-cx).toFixed(2)} ${(-cy).toFixed(2)})`;
+  const keyframes = (keys, t) => {
+    if (t <= keys[0][0]) return keys[0].slice(1);
+    for (let i = 1; i < keys.length; i++) {
+      const [t1, ...b] = keys[i], [t0, ...a] = keys[i - 1];
+      if (t <= t1) { const p = easeInOut((t - t0) / (t1 - t0)); return a.map((v, k) => lerp(v, b[k], p)); }
+    }
+    return keys[keys.length - 1].slice(1);
+  };
+
+  // Per-letter text, so each letter can spring on its own. Anchored text is
+  // measured with its anchor, then laid out letter by letter from the left.
+  const kinetic = (text, attrs, parent) => {
+    const probe = el('text', attrs, parent);
+    probe.textContent = text;
+    const nodes = [...text].map((ch, i) => {
+      const node = el('text', { ...attrs, x: probe.getStartPositionOfChar(i).x.toFixed(2) }, parent);
+      node.removeAttribute('letter-spacing');
+      node.removeAttribute('text-anchor');
+      node.textContent = ch;
+      return node;
+    });
+    probe.remove();
+    return nodes;
+  };
+  const springLetters = (nodes, t, start, amp = 46, from = 0, to = nodes.length) => nodes.slice(from, to).forEach((node, i) => {
+    const u = t - (start + i * 0.035);
+    node.setAttribute('opacity', clamp(u / 0.18).toFixed(3));
+    node.setAttribute('transform', `translate(0 ${spring(u, amp).toFixed(2)})`);
+  });
+  const slideIn = (node, p, dx = -18) => {
+    node.setAttribute('opacity', p.toFixed(3));
+    node.setAttribute('transform', `translate(${((1 - p) * dx).toFixed(2)} 0)`);
+  };
+  const typeOn = (node, text, p) => { node.textContent = text.slice(0, Math.round(text.length * clamp(p))); };
+  const pop = (node, cx, cy, u, base = 1) => {
+    const s = u <= 0 ? 0 : base * (1 + spring(u, -1));
+    node.setAttribute('transform', `translate(${cx} ${cy}) scale(${Math.max(0, s).toFixed(3)}) translate(${-cx} ${-cy})`);
+    node.setAttribute('opacity', clamp(u / 0.08).toFixed(3));
+  };
+
+  // Decode: each character resolves from noise at its own moment; before it
+  // resolves it shows a glyph that changes every frame, or the old text's
+  // character when there was one.
+  const GLYPHS = '._:{}|()*#<>/=abcdefhijklmnoprstuvwxyz0123456789';
+  const decode = (node, text, t, start, length, colour, { from = '', noise = C.quiet, seed = 1 } = {}) => {
+    const frame = Math.floor(t * 30);
+    const n = Math.max(text.length, from.length);
+    let html = '';
+    for (let k = 0; k < n; k++) {
+      const at = start + length * (k / Math.max(1, n));
+      const scramble = at - 0.22;
+      const target = text[k];
+      if (t >= at) { if (target) html += `<tspan fill="${colour}">${esc(target)}</tspan>`; continue; }
+      if (t >= scramble) {
+        const g = GLYPHS[Math.floor(hash(k + seed * 97, frame) * GLYPHS.length)];
+        html += `<tspan fill="${noise}">${esc(g)}</tspan>`;
+        continue;
+      }
+      if (from[k]) html += `<tspan fill="${colour}">${esc(from[k])}</tspan>`;
+    }
+    node.innerHTML = html;
+  };
+
+  const ringTiles = [
+    { name: '/estimate', note: 'a ticket, priced in hours', deg: -90 },
+    { name: '/log', note: 'time entries from git', deg: -30 },
+    { name: '/calibrate', note: 'estimates vs logged hours', deg: 30 },
+    { name: '/postmortem', note: 'where the hours went', deg: 90 },
+    { name: '/sprint-plan', note: 'load vs capacity', deg: 150 },
+    { name: '/spec-interview', note: 'spec gaps into questions', deg: 210 },
+  ];
+  const CORE = { x: 400, y: 640 };
+  const RING = { rx: 245, ry: 255 };
+  const ringPoint = (deg) => ({ x: CORE.x + RING.rx * Math.cos(deg * Math.PI / 180), y: CORE.y + RING.ry * Math.sin(deg * Math.PI / 180) });
+
+  const film = {
+    duration: 23.5,
+    T: { implode: 7.3, boom: 8.0, dive: 9.6, enter: 10.25, exit: 15.8, loop: 16.5, close: 19.4, endBoom: 20.0 },
+
+    build() {
+      const r = rng(42);
+      this.mesh = Array.from({ length: 22 }, () => ({ x: r() * 800, y: r() * 1000, ph: r() * 6.28 }));
+      this.edges = [];
+      this.mesh.forEach((a, i) => {
+        this.mesh.map((b, j) => ({ j, d: Math.hypot(a.x - b.x, a.y - b.y) })).filter(({ j }) => j !== i)
+          .sort((p, q) => p.d - q.d).slice(0, 2)
+          .forEach(({ j }) => { if (!this.edges.some(([p, q]) => p === j && q === i)) this.edges.push([i, j]); });
+      });
+      this.dust = Array.from({ length: 46 }, () => ({ x: r() * 800, y: r() * 1000, v: 8 + r() * 22, s: 0.8 + r() * 1.8, ph: r() * 6.28 }));
+      this.buildStage();
+      this.buildInside();
+      this.buildEnd();
+      const rr = rng(7);
+      this.streams = Array.from({ length: 48 }, () => ({ x: 70 + rr() * 660, y: 330 + rr() * 520, d: rr() * 0.3 }));
+      this.sparks = Array.from({ length: 30 }, () => {
+        const a = Math.PI * (1.15 + rr() * 0.7), v = 170 + rr() * 380;
+        return { vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.9, gold: rr() > 0.4 };
+      });
+      this.shards = Array.from({ length: 30 }, () => ({
+        w: 8 + rr() * 22, h: 6 + rr() * 14, dx: (rr() - 0.5) * 120, dy: (rr() - 0.5) * 40,
+        vx: (rr() - 0.5) * 360, vy: -150 - rr() * 260, spin: (rr() - 0.5) * 720,
+      }));
+    },
+
+    // ---------------------------------------------------------------- stage
+    buildStage() {
+      const g = $('stage');
+      g.innerHTML = '';
+      const titleWrap = el('g', { id: 'titleWrap' }, $('hud'));
+      this.title = kinetic('rmine-skills', { class: 'fr', 'font-size': 100, 'font-weight': 900, 'letter-spacing': '-2.5', x: 60, y: 168, fill: C.paper }, titleWrap);
+      const subs = el('g', { id: 'subs' }, $('hud'));
+      el('text', { id: 'sub1', class: 'sans', 'font-size': 30, x: 60, y: 238 }, subs);
+      el('text', { id: 'sub2', class: 'sans', 'font-size': 28, x: 60, y: 280 }, subs);
+
+      const one = el('g', { id: 'one' }, g);
+      // Redmine servers, one per profile.
+      [['srvWork', 'work', 668, 92], ['srvClient', 'client', 668, 214]].forEach(([id, label, x, y]) => {
+        const s = el('g', { id }, one);
+        s.innerHTML = `<rect x="${x - 44}" y="${y - 34}" width="88" height="68" rx="10" fill="${C.surface}" stroke="${C.lineStrong}" stroke-width="2"/>
+          ${[0, 1, 2].map((k) => `<rect x="${x - 32}" y="${y - 24 + k * 18}" width="64" height="11" rx="3" fill="${C.ink}"/><circle cx="${x + 22}" cy="${y - 18.5 + k * 18}" r="2.6" class="led" fill="${C.quiet}"/>`).join('')}
+          <text class="mono" font-size="15" x="${x}" y="${y + 56}" text-anchor="middle" fill="${C.quiet}">redmine · ${label}</text>`;
+        el('circle', { id: `${id}Ring`, cx: x, cy: y, r: 20, fill: 'none', stroke: C.go, 'stroke-width': 3, opacity: 0 }, one);
+      });
+
+      const term = el('g', { id: 'term' }, one);
+      term.innerHTML = `<rect x="56" y="330" width="688" height="300" rx="14" fill="#141A22" stroke="${C.line}" stroke-width="2"/>
+        <rect x="56" y="330" width="688" height="38" rx="14" fill="${C.surface}"/><rect x="56" y="352" width="688" height="16" fill="${C.surface}"/>
+        ${[0, 1, 2].map((k) => `<circle cx="${84 + k * 22}" cy="349" r="6.5" fill="${[C.heat, C.signal, C.teal][k]}" opacity="0.75"/>`).join('')}
+        <text class="mono" font-size="15" x="400" y="354" text-anchor="middle" fill="${C.quiet}">~/product</text>`;
+      el('text', { id: 'cmd', class: 'mono', 'font-size': 21, x: 82, y: 410 }, term);
+      el('rect', { id: 'caret', x: 0, y: 392, width: 11, height: 24, fill: C.signal }, term);
+      for (let i = 0; i < 6; i++) el('text', { id: `out-${i}`, class: 'mono', 'font-size': 19, x: 82, y: 452 + i * 29 }, term);
+
+      el('g', { id: 'comet' }, one);
+      const chips = el('g', { id: 'chips' }, one);
+      this.chips = [['issue view', 60, 690], ['issue comment', 236, 690], ['time log', 466, 690], ['attachments', 60, 748], ['whoami', 262, 748], ['--profile', 404, 748], ['-o json', 566, 748]]
+        .map(([label, x, y], i) => {
+          const w = label.length * 11.4 + 30;
+          const c = el('g', { id: `chip-${i}` }, chips);
+          c.innerHTML = `<rect x="${x}" y="${y - 22}" width="${w}" height="40" rx="20" fill="${C.surface}" stroke="${i >= 5 ? C.go : C.lineStrong}" stroke-width="2"/>
+            <text class="mono" font-size="19" x="${x + w / 2}" y="${y + 4}" text-anchor="middle" fill="${i >= 5 ? C.go : C.paper}">${label}</text>`;
+          return { node: c, x: x + w / 2, y };
+        });
+      el('text', { id: 'caption1', class: 'sans', 'font-size': 28, x: 60, y: 836, fill: C.paper }, one);
+
+      const two = el('g', { id: 'two' }, g);
+      el('g', { id: 'spokes' }, two);
+      const core = el('g', { id: 'core' }, two);
+      core.innerHTML = `<circle id="coreGlow" cx="${CORE.x}" cy="${CORE.y}" r="70" fill="${C.go}" filter="url(#glowWide)" opacity="0.3"/>
+        <circle cx="${CORE.x}" cy="${CORE.y}" r="58" fill="#10202A" stroke="${C.go}" stroke-width="3"/>
+        <text class="mono" font-size="25" x="${CORE.x}" y="${CORE.y + 3}" text-anchor="middle" fill="${C.go}">rmine</text>
+        <text class="mono" font-size="12" x="${CORE.x}" y="${CORE.y + 24}" text-anchor="middle" fill="${C.quiet}">the CLI</text>`;
+      this.tiles = ringTiles.map((tile, i) => {
+        const p = ringPoint(tile.deg);
+        const node = el('g', { id: `tile-${i}` }, two);
+        node.innerHTML = `<rect class="tg" x="${p.x - 120}" y="${p.y - 40}" width="240" height="80" rx="14" fill="${C.signal}" filter="url(#glow)" opacity="0"/>
+          <rect class="tb" x="${p.x - 116}" y="${p.y - 37}" width="232" height="74" rx="12" fill="${C.surface}" stroke="${C.lineStrong}" stroke-width="2"/>
+          <text class="mono" font-size="22" x="${p.x - 98}" y="${p.y - 4}" fill="${C.signal}">${tile.name}</text>
+          <text class="mono" font-size="13.5" x="${p.x - 98}" y="${p.y + 21}" fill="${C.quiet}">${tile.note}</text>`;
+        return { ...tile, ...p, node };
+      });
+      el('g', { id: 'loopComet' }, two);
+      el('g', { id: 'stageFx' }, g);
+      el('text', { id: 'caption2', class: 'sans', 'font-size': 27, x: 400, y: 975, 'text-anchor': 'middle', fill: C.paper }, two);
+    },
+
+    // --------------------------------------------------------------- inside
+    buildInside() {
+      const g = $('inside');
+      g.innerHTML = '';
+      this.inHead = kinetic('/estimate', { class: 'fr', 'font-size': 92, 'font-weight': 900, 'letter-spacing': '-2', x: 60, y: 160, fill: C.paper }, el('g', {}, g));
+      el('text', { id: 'inSub', class: 'sans', 'font-size': 29, x: 60, y: 218, fill: C.paper }, g).textContent = "Three agents that don't trust each other.";
+      this.agents = [
+        { name: 'auditor', note: "can't give hours", y: 330 },
+        { name: 'estimator', note: 'reads the code it prices', y: 480 },
+        { name: 'validator', note: 'never sees how it was made', y: 860 },
+      ];
+      this.wallY = 690;
+      el('line', { id: 'railA', x1: 400, y1: 330, x2: 400, y2: 330, stroke: C.signal, 'stroke-width': 6, 'stroke-linecap': 'round' }, g);
+      el('line', { id: 'railB', x1: 400, y1: 480, x2: 400, y2: 480, stroke: C.signal, 'stroke-width': 6, 'stroke-linecap': 'round', 'stroke-dasharray': '1 16' }, g);
+      el('line', { id: 'wall', x1: 400, y1: this.wallY, x2: 400, y2: this.wallY, stroke: C.lineStrong, 'stroke-width': 4, 'stroke-dasharray': '16 12' }, g);
+      el('rect', { id: 'shimmer', x: 0, y: this.wallY - 3, width: 50, height: 6, rx: 3, fill: C.paper, filter: 'url(#glow)' }, g);
+      el('text', { id: 'wallLabel', class: 'mono', 'font-size': 15, x: 70, y: this.wallY + 30, fill: C.quiet }, g).textContent = 'no derivation past here';
+      el('g', { id: 'ripples' }, g);
+      this.agents.forEach((a, i) => {
+        const n = el('g', { id: `agent-${i}` }, g);
+        if (i < 2) el('circle', { cx: 400, cy: a.y, r: 18, fill: C.signal }, n);
+        else el('circle', { id: 'vring', cx: 400, cy: a.y, r: 16, fill: C.ink, stroke: C.paper, 'stroke-width': 5 }, n);
+        el('text', { class: 'mono', 'font-size': 30, x: 440, y: a.y + 9, fill: C.paper }, n).textContent = a.name;
+        el('text', { id: `anote-${i}`, class: 'mono', 'font-size': 17, x: 440, y: a.y + 38, fill: C.quiet }, g);
+        el('circle', { id: `apulse-${i}`, cx: 400, cy: a.y, r: 18, fill: 'none', stroke: i < 2 ? C.signal : C.paper, 'stroke-width': 3, opacity: 0 }, g);
+      });
+      const ticket = el('g', { id: 'ticket' }, g);
+      ticket.innerHTML = `<rect x="0" y="0" width="170" height="96" rx="10" fill="${C.surface}" stroke="${C.lineStrong}" stroke-width="2"/>
+        <text class="mono" font-size="15" x="14" y="26" fill="${C.quiet}">ticket #12345</text>
+        <rect x="14" y="42" width="136" height="7" rx="3.5" fill="${C.paper}" opacity="0.28"/>
+        <rect x="14" y="58" width="112" height="7" rx="3.5" fill="${C.paper}" opacity="0.28"/>
+        <rect x="14" y="74" width="84" height="7" rx="3.5" fill="${C.paper}" opacity="0.28"/>
+        <rect id="scan" x="6" y="0" width="158" height="3" rx="1.5" fill="${C.signal}" filter="url(#glow)"/>`;
+      const chip = el('g', { id: 'hours' }, g);
+      chip.innerHTML = `<rect x="-48" y="-18" width="96" height="36" rx="18" fill="${C.surface}" stroke="${C.signal}" stroke-width="2.5"/>
+        <text class="mono" font-size="19" x="0" y="7" text-anchor="middle" fill="${C.signal}">hours</text>
+        <line id="strike" x1="-40" y1="0" x2="-40" y2="0" stroke="${C.heat}" stroke-width="4" stroke-linecap="round"/>`;
+      el('rect', { id: 'token', x: -11, y: -16, width: 22, height: 32, rx: 11, fill: C.signal }, g);
+      this.paths = ['app/models/widget.rb', 'app/services/export.rb', 'db/schema.rb', 'spec/services/export_spec.rb'];
+      const panel = el('g', { id: 'grep' }, g);
+      panel.innerHTML = `<rect x="52" y="398" width="300" height="122" rx="10" fill="${C.ink}" fill-opacity="0.9" stroke="${C.line}" stroke-width="1.5"/>
+        <rect id="grepBar" x="58" y="0" width="288" height="24" rx="4" fill="${C.signal}" opacity="0.2"/>
+        ${this.paths.map((_, i) => `<text id="gp-${i}" class="mono" font-size="15" x="68" y="${428 + i * 25}" fill="${C.quiet}"></text>`).join('')}`;
+      const card = (id, title, colour, rows) => {
+        const c = el('g', { id }, g);
+        c.innerHTML = `<rect x="-78" y="-34" width="156" height="68" rx="10" fill="${colour === C.signal ? '#2A2415' : C.surface}" stroke="${colour}" stroke-width="2.5"/>
+          <text class="mono" font-size="16" x="-62" y="-10" fill="${colour}">${title}</text>${rows}`;
+      };
+      card('estimate', 'estimate', C.signal, `
+        <text class="mono" font-size="11" x="-62" y="10" fill="${C.quiet}">frontend</text><rect x="4" y="2" width="40" height="9" rx="4.5" fill="${C.signal}"/>
+        <text class="mono" font-size="11" x="-62" y="25" fill="${C.quiet}">backend</text><rect x="4" y="17" width="60" height="9" rx="4.5" fill="${C.signal}"/>
+        <path id="check" d="M48 -14 L56 -6 L70 -22" fill="none" stroke="${C.paper}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/>`);
+      card('derivation', 'derivation', C.quiet, `
+        <text class="mono" font-size="11" x="-62" y="10" fill="${C.quiet}">grep -rn Widget</text>
+        <text class="mono" font-size="11" x="-62" y="25" fill="${C.quiet}">notes, assumptions</text>`);
+      el('g', { id: 'shards' }, g);
+      el('g', { id: 'ifx' }, g);
+    },
+
+    // ------------------------------------------------------------------ end
+    buildEnd() {
+      const g = $('end');
+      g.innerHTML = '';
+      this.endA = kinetic('rmine', { class: 'fr', 'font-size': 116, 'font-weight': 900, 'letter-spacing': '-2.5', x: 400, y: 380, 'text-anchor': 'middle', fill: C.paper }, el('g', {}, g));
+      el('text', { id: 'plus', class: 'fr', 'font-size': 70, 'font-weight': 700, x: 400, y: 452, 'text-anchor': 'middle', fill: C.signal }, g).textContent = '+';
+      this.endB = kinetic('rmine-skills', { class: 'fr', 'font-size': 104, 'font-weight': 900, 'letter-spacing': '-2.5', x: 400, y: 552, 'text-anchor': 'middle', fill: C.paper }, el('g', {}, g));
+      el('text', { id: 'e1', class: 'sans', 'font-size': 32, x: 400, y: 648, 'text-anchor': 'middle', fill: C.paper }, g).textContent = 'Open source, MIT.';
+      el('text', { id: 'e2', class: 'sans', 'font-size': 30, x: 400, y: 694, 'text-anchor': 'middle', fill: C.signal }, g).textContent = 'A Go CLI and the Claude Code plugin on top.';
+      el('text', { id: 'e3', class: 'mono', 'font-size': 26, x: 400, y: 782, 'text-anchor': 'middle', fill: C.quiet }, g);
+      el('line', { id: 'eLine', x1: 400, y1: 728, x2: 400, y2: 728, stroke: C.line, 'stroke-width': 2 }, g);
+    },
+
+    // ----------------------------------------------------------------- seek
+    seek(t) {
+      const T = this.T;
+      this.drawAmbient(t);
+      this.seekStage(t);
+      this.seekInside(t);
+      this.seekEnd(t);
+      const flashO = Math.max(0.42 * Math.pow(bump(t, T.boom, 0.5), 2), 0.55 * Math.pow(bump(t, T.enter - 0.06, 0.45), 2), 0.4 * Math.pow(bump(t, T.endBoom, 0.5), 2));
+      $('flash').setAttribute('opacity', flashO.toFixed(3));
+      $('vignette').setAttribute('opacity', (0.55 * smooth(T.dive, T.enter, t) * (1 - smooth(T.exit, T.exit + 0.6, t)) + 0.35).toFixed(3));
+    },
+
+    drawAmbient(t) {
+      const pos = this.mesh.map((n) => ({ x: n.x + Math.sin(t * 0.35 + n.ph) * 7, y: n.y + Math.cos(t * 0.28 + n.ph) * 5 }));
+      $('mesh').innerHTML = this.edges.map(([a, b]) => `<line x1="${pos[a].x.toFixed(1)}" y1="${pos[a].y.toFixed(1)}" x2="${pos[b].x.toFixed(1)}" y2="${pos[b].y.toFixed(1)}" stroke="${C.line}" stroke-width="1" opacity="0.4"/>`).join('')
+        + pos.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.4" fill="${C.lineStrong}" opacity="0.8"/>`).join('');
+      const endIn = smooth(this.T.endBoom, this.T.endBoom + 1.2, t);
+      $('dust').innerHTML = endIn <= 0 ? '' : this.dust.map((d) => {
+        const y = ((d.y - d.v * (t - this.T.endBoom) * 2) % 1000 + 1000) % 1000;
+        const x = d.x + Math.sin(t * 0.8 + d.ph) * 10;
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${d.s.toFixed(2)}" fill="${C.signal}" opacity="${(0.45 * endIn * (0.5 + 0.5 * Math.sin(t * 1.7 + d.ph))).toFixed(3)}"/>`;
+      }).join('');
+    },
+
+    stageCamera(t) {
+      const T = this.T;
+      const [cx, cy, s] = keyframes([
+        [0, 400, 470, 1.22], [2.3, 400, 500, 1.0], [7.1, 400, 500, 1.0], [7.95, 400, 560, 1.07], [8.3, 400, 500, 1.0],
+        [T.dive, 400, 500, 1.0], [T.enter, 400, 385, 3.3], [T.exit, 400, 385, 3.3], [T.exit + 0.7, 400, 500, 1.0],
+        [T.close, 400, 500, 1.02], [T.endBoom, 400, 600, 1.1],
+      ], t);
+      const shake = bump(t, 2.0, 0.35) * 0.6 + bump(t, T.boom, 0.5);
+      return { cx: cx + 6 * shake * Math.sin(t * 95), cy: cy + 5 * shake * Math.cos(t * 83), s };
+    },
+
+    seekStage(t) {
+      const T = this.T;
+      const cam = this.stageCamera(t);
+      const visible = 1 - smooth(T.enter - 0.1, T.enter + 0.05, t) + smooth(T.exit, T.exit + 0.35, t);
+      const gone = smooth(T.endBoom - 0.2, T.endBoom, t);
+      $('stage').setAttribute('transform', camera(cam.cx, cam.cy, cam.s));
+      $('stage').setAttribute('opacity', (clamp(visible) * (1 - gone)).toFixed(3));
+
+      // Title: "rmine" big, then "-skills" grows out of it.
+      const grow = easeInOut(span(t, T.implode + 0.1, 0.6));
+      const titleScale = lerp(1.32, 1, grow);
+      const hudOut = smooth(T.dive, T.dive + 0.3, t) * (1 - smooth(T.exit + 0.3, T.exit + 0.7, t)) + smooth(T.close, T.close + 0.4, t);
+      const hud = $('titleWrap');
+      hud.setAttribute('transform', `translate(60 ${(168 - 30 * clamp(hudOut)).toFixed(1)}) scale(${titleScale.toFixed(4)}) translate(-60 -168)`);
+      hud.setAttribute('opacity', (1 - clamp(hudOut)).toFixed(3));
+      $('subs').setAttribute('opacity', (1 - clamp(hudOut)).toFixed(3));
+      $('subs').setAttribute('transform', `translate(0 ${(lerp(0, -8, grow) - 30 * clamp(hudOut)).toFixed(1)})`);
+      springLetters(this.title, t, 0.12, 54, 0, 5);
+      this.title.slice(5).forEach((node, i) => {
+        const u = t - (T.implode + 0.35 + i * 0.05);
+        const settle = T.implode + 0.55 + i * 0.05;
+        node.setAttribute('opacity', clamp(u / 0.1).toFixed(3));
+        node.setAttribute('transform', `translate(0 ${spring(t - settle, 40).toFixed(2)})`);
+        node.textContent = t < settle ? GLYPHS[Math.floor(hash(i, Math.floor(t * 30)) * GLYPHS.length)] : 'rmine-skills'[5 + i];
+        node.setAttribute('fill', t < settle ? C.go : C.paper);
+      });
+      const sub1 = $('sub1'), sub2 = $('sub2');
+      if (t < T.implode + 0.5) {
+        decode(sub1, 'A Redmine CLI, written in Go.', t, 0.5, 0.55, C.paper, { seed: 3 });
+        decode(sub2, 'For you and your coding agent.', t, 0.85, 0.55, C.signal, { seed: 4 });
+      } else {
+        decode(sub1, 'A Claude Code plugin built on it.', t, T.implode + 0.6, 0.55, C.paper, { from: 'A Redmine CLI, written in Go.', seed: 5 });
+        decode(sub2, 'Six workflows for your tickets.', t, T.implode + 0.8, 0.55, C.signal, { from: 'For you and your coding agent.', seed: 6 });
+      }
+
+      this.seekOne(t);
+      this.seekTwo(t);
+    },
+
+    seekOne(t) {
+      const T = this.T;
+      const one = $('one');
+      // The whole first act is pulled into the core at the implode.
+      const q = easeIn(span(t, T.implode, T.boom - T.implode - 0.05));
+      one.setAttribute('transform', `translate(${CORE.x} ${CORE.y}) rotate(${(-14 * q).toFixed(2)}) scale(${(1 - 0.92 * q).toFixed(4)}) translate(${-CORE.x} ${-CORE.y})`);
+      one.setAttribute('opacity', (t < T.boom ? 1 - smooth(0.75, 1, q) : 0).toFixed(3));
+
+      const termIn = easeOut(span(t, 0.25, 0.5));
+      $('term').setAttribute('opacity', termIn.toFixed(3));
+      $('term').setAttribute('transform', `translate(0 ${(24 * (1 - termIn)).toFixed(1)})`);
+      pop($('srvWork'), 668, 92, t - 0.9);
+      pop($('srvClient'), 668, 214, t - 4.35);
+
+      const cmd1 = 'rmine issue view 12345 -o json';
+      const cmd2 = 'rmine time list --profile client -o json';
+      const second = t >= 4.25;
+      const cmd = second ? cmd2 : cmd1;
+      const typed = second ? easeOut(span(t, 4.3, 0.75)) : easeOut(span(t, 0.6, 0.85));
+      const shown = cmd.slice(0, Math.round(cmd.length * typed));
+      $('cmd').innerHTML = `<tspan fill="${C.signal}">$&#160;</tspan>` + esc(shown).replace('rmine', `<tspan fill="${C.go}">rmine</tspan>`);
+      const caretX = 82 + (2 + shown.length) * 12.62;
+      $('caret').setAttribute('x', caretX.toFixed(1));
+      $('caret').setAttribute('opacity', (Math.floor(t * 2.4) % 2 === 0 || (typed > 0 && typed < 1) ? 0.9 : 0).toFixed(2));
+
+      const json1 = [
+        ['{', C.paper],
+        ['  "id": 12345,', C.paper],
+        ['  "subject": "Export widgets from the listing",', C.paper],
+        ['  "status": "In Progress",', C.teal],
+        ['  "estimated_hours": 6', C.signal],
+        ['}', C.paper],
+      ];
+      const json2 = [
+        ['[', C.paper],
+        ['  { "hours": 3.5, "activity": "Development" },', C.paper],
+        ['  { "hours": 1.0, "activity": "Code review" },', C.paper],
+        ['  { "hours": 0.5, "activity": "Demo" }', C.paper],
+        [']', C.paper],
+        ['', C.paper],
+      ];
+      for (let i = 0; i < 6; i++) {
+        const node = $(`out-${i}`);
+        if (!second) {
+          const [line, colour] = json1[i];
+          const clear = span(t, 4.05, 0.2);
+          decode(node, line, t, 2.4 + i * 0.12, 0.35, colour, { seed: 10 + i });
+          node.setAttribute('opacity', (1 - clear).toFixed(3));
+        } else {
+          const [line, colour] = json2[i];
+          node.setAttribute('opacity', 1);
+          decode(node, line, t, 5.55 + i * 0.12, 0.35, colour, { seed: 20 + i });
+        }
+      }
+
+      // The request goes out to the server and the answer comes back.
+      const out = [];
+      const trail = (curve, u, colour, width) => {
+        for (let k = 1; k <= 8; k++) {
+          const a = cubic(...curve, clamp(u - 0.03 * (k - 1))), b = cubic(...curve, clamp(u - 0.03 * k));
+          out.push(`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${colour}" stroke-width="${(width * (1 - k / 9)).toFixed(2)}" stroke-linecap="round" opacity="${(0.8 * (1 - k / 9)).toFixed(3)}"/>`);
+        }
+      };
+      const shot = (start, server, colour) => {
+        const from = { x: 700, y: 336 };
+        const up = [from, { x: 790, y: 300 }, { x: 760, y: server.y + 70 }, { x: server.x + 10, y: server.y + 30 }];
+        const down = [{ x: server.x - 10, y: server.y + 30 }, { x: 600, y: server.y + 90 }, { x: 560, y: 300 }, { x: 520, y: 336 }];
+        const u1 = span(t, start, 0.38), u2 = span(t, start + 0.42, 0.38);
+        if (u1 > 0 && u1 < 1) { const e = easeIn(u1); trail(up, e, colour, 5); const p = cubic(...up, e); out.push(`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="6" fill="${colour}" filter="url(#glow)"/><circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="${C.paper}"/>`); }
+        if (u2 > 0 && u2 < 1) { const e = easeOut(u2); trail(down, e, C.paper, 4); const p = cubic(...down, e); out.push(`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${C.paper}" filter="url(#glow)"/>`); }
+        const hit = span(t, start + 0.38, 0.55);
+        if (hit > 0 && hit < 1) out.push(`<circle cx="${server.x}" cy="${server.y}" r="${(30 + 70 * easeOut(hit)).toFixed(1)}" fill="none" stroke="${colour}" stroke-width="${(4 * (1 - hit) + 0.5).toFixed(2)}" opacity="${(0.9 * (1 - hit)).toFixed(3)}"/>`);
+        return span(t, start + 0.38, 0.6);
+      };
+      const lit1 = shot(1.6, { x: 668, y: 92 }, C.go);
+      const lit2 = shot(5.1, { x: 668, y: 214 }, C.teal);
+      document.querySelectorAll('#srvWork .led').forEach((n, k) => n.setAttribute('fill', lit1 > 0 && lit1 < 1 && (Math.floor(t * 16) + k) % 2 ? C.go : C.quiet));
+      document.querySelectorAll('#srvClient .led').forEach((n, k) => n.setAttribute('fill', lit2 > 0 && lit2 < 1 && (Math.floor(t * 16) + k) % 2 ? C.teal : C.quiet));
+      $('comet').innerHTML = out.join('');
+
+      // Commands slam in, then the caption.
+      this.chips.forEach((c, i) => {
+        const u = t - (6.0 + i * 0.07);
+        const s = u <= 0 ? 0 : 1 + spring(u, -1);
+        c.node.setAttribute('opacity', clamp(u / 0.08).toFixed(3));
+        c.node.setAttribute('transform', `translate(${c.x} ${(c.y + spring(u, 60)).toFixed(1)}) rotate(${spring(u, (i % 2 ? 8 : -8)).toFixed(2)}) scale(${Math.max(0, s).toFixed(3)}) translate(${-c.x} ${-c.y})`);
+      });
+      typeOn($('caption1'), 'JSON on every command. A profile per server.', easeOut(span(t, 6.55, 0.6)));
+    },
+
+    seekTwo(t) {
+      const T = this.T;
+      const two = $('two');
+      const closing = easeIn(span(t, T.close, T.endBoom - T.close - 0.05));
+      two.setAttribute('transform', `translate(${CORE.x} ${CORE.y}) rotate(${(20 * closing).toFixed(2)}) scale(${(1 - 0.95 * closing).toFixed(4)}) translate(${-CORE.x} ${-CORE.y})`);
+      two.setAttribute('opacity', (t < T.boom ? 0 : 1 - smooth(0.8, 1, closing)).toFixed(3));
+
+      const out = [];
+      // Streams pulled into the core during the implode, and the core itself.
+      const q = span(t, T.implode, T.boom - T.implode);
+      if (q > 0 && q < 1) {
+        this.streams.forEach((s, i) => {
+          const local = clamp((q - s.d) / (1 - s.d));
+          if (local <= 0 || local >= 1) return;
+          const e = easeIn(local), e0 = easeIn(clamp(local - 0.18));
+          const a = { x: lerp(s.x, CORE.x, e), y: lerp(s.y, CORE.y, e) }, b = { x: lerp(s.x, CORE.x, e0), y: lerp(s.y, CORE.y, e0) };
+          out.push(`<line x1="${b.x.toFixed(1)}" y1="${b.y.toFixed(1)}" x2="${a.x.toFixed(1)}" y2="${a.y.toFixed(1)}" stroke="${i % 3 ? C.go : C.signal}" stroke-width="2.4" stroke-linecap="round" opacity="${(0.85 * (1 - local * 0.5)).toFixed(3)}"/>`);
+        });
+        const orb = easeIn(q);
+        out.push(`<circle cx="${CORE.x}" cy="${CORE.y}" r="${(4 + 30 * orb).toFixed(1)}" fill="${C.go}" filter="url(#glow)" opacity="${(0.9 * orb).toFixed(3)}"/>`);
+      }
+      const wave = span(t, T.boom, 0.8), wave2 = span(t, T.boom + 0.08, 0.65);
+      if (wave > 0 && wave < 1) out.push(`<circle cx="${CORE.x}" cy="${CORE.y}" r="${(10 + 900 * easeOut(wave)).toFixed(1)}" fill="none" stroke="${C.go}" stroke-width="${(10 * (1 - wave) + 1).toFixed(2)}" opacity="${(0.95 * (1 - wave)).toFixed(3)}"/>`);
+      if (wave2 > 0 && wave2 < 1) out.push(`<circle cx="${CORE.x}" cy="${CORE.y}" r="${(10 + 480 * easeOut(wave2)).toFixed(1)}" fill="none" stroke="${C.paper}" stroke-width="2" opacity="${(0.8 * (1 - wave2)).toFixed(3)}"/>`);
+
+      pop($('core'), CORE.x, CORE.y, t - T.boom);
+      $('coreGlow').setAttribute('opacity', (0.25 + 0.12 * Math.sin(t * 2.4)).toFixed(3));
+
+      // Tiles fly out of the core on curved paths and spring into the ring.
+      this.tiles.forEach((tile, i) => {
+        const start = T.boom + 0.05 + i * 0.06;
+        const u = span(t, start, 0.5);
+        const node = tile.node;
+        const ctrl = { x: CORE.x + (tile.x - CORE.x) * 0.2 - (tile.y - CORE.y) * 0.5, y: CORE.y + (tile.y - CORE.y) * 0.2 + (tile.x - CORE.x) * 0.5 };
+        const path = [CORE, ctrl, { x: tile.x - (tile.y - CORE.y) * 0.1, y: tile.y + (tile.x - CORE.x) * 0.1 }, tile];
+        const e = easeOut(u);
+        const p = cubic(...path, e);
+        const arrive = t - (start + 0.5);
+        const s = u < 1 ? lerp(0.2, 1, e) : 1 + spring(arrive, 0.18);
+        node.setAttribute('opacity', (u <= 0 ? 0 : clamp(u / 0.1)).toFixed(3));
+        node.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(${s.toFixed(3)}) translate(${-tile.x} ${-tile.y})`);
+        if (u > 0 && u < 1) for (let k = 1; k <= 7; k++) {
+          const a = cubic(...path, clamp(e - 0.035 * (k - 1))), b = cubic(...path, clamp(e - 0.035 * k));
+          out.push(`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${C.signal}" stroke-width="${(5 * (1 - k / 8)).toFixed(2)}" stroke-linecap="round" opacity="${(0.7 * (1 - k / 8)).toFixed(3)}"/>`);
+        }
+        // Dive: every tile but /estimate fades as the camera goes in.
+        const dim = i === 0 ? 0 : smooth(T.dive, T.dive + 0.4, t) * (1 - smooth(T.exit + 0.2, T.exit + 0.7, t));
+        node.setAttribute('opacity', ((u <= 0 ? 0 : clamp(u / 0.1)) * (1 - 0.85 * dim)).toFixed(3));
+      });
+
+      // Spokes from rmine to every skill.
+      const spokeIn = easeOut(span(t, T.boom + 0.55, 0.45));
+      const lit = this.loopLit(t);
+      $('spokes').innerHTML = this.tiles.map((tile, i) => {
+        const dx = tile.x - CORE.x, dy = tile.y - CORE.y, len = Math.hypot(dx, dy);
+        const a = { x: CORE.x + dx / len * 62, y: CORE.y + dy / len * 62 };
+        const b = { x: lerp(a.x, tile.x - dx / len * 48, spokeIn), y: lerp(a.y, tile.y - dy / len * 48, spokeIn) };
+        const glow = lit[i];
+        let s = `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${mix(C.line, C.go, glow)}" stroke-width="${(2 + 2 * glow).toFixed(2)}" stroke-dasharray="3 7" opacity="${(0.9 * spokeIn).toFixed(3)}"/>`;
+        if (glow > 0.05) {
+          const f = 1 - glow;
+          const px = lerp(a.x, tile.x - dx / len * 48, f), py = lerp(a.y, tile.y - dy / len * 48, f);
+          s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="5" fill="${C.go}" filter="url(#glow)"/>`;
+        }
+        return s;
+      }).join('');
+
+      // The loop: a comet circles every skill, lighting each in turn.
+      this.tiles.forEach((tile, i) => {
+        const glowRect = tile.node.querySelector('.tg'), body = tile.node.querySelector('.tb');
+        glowRect.setAttribute('opacity', (0.55 * lit[i]).toFixed(3));
+        body.setAttribute('stroke', mix(C.lineStrong, C.signal, lit[i]));
+      });
+      const loop = span(t, T.loop, 2.5);
+      const lc = [];
+      if (loop > 0 && loop < 1) {
+        const deg = 210 + 360 * easeInOut(loop);
+        for (let k = 0; k < 14; k++) {
+          const a = ringPoint(deg - k * 3.2), b = ringPoint(deg - (k + 1) * 3.2);
+          lc.push(`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${C.signal}" stroke-width="${(7 * (1 - k / 14)).toFixed(2)}" stroke-linecap="round" opacity="${(0.9 * (1 - k / 14)).toFixed(3)}"/>`);
+        }
+        const p = ringPoint(deg);
+        lc.push(`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="11" fill="${C.signal}" filter="url(#glow)"/><circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${C.paper}"/>`);
+      }
+      $('loopComet').innerHTML = lc.join('');
+      typeOn($('caption2'), 'Every skill runs on rmine.', easeOut(span(t, T.loop + 0.2, 0.7)));
+      $('caption2').setAttribute('opacity', (1 - smooth(T.close, T.close + 0.3, t)).toFixed(3));
+
+      $('stageFx').innerHTML = out.join('');
+      $('fx').innerHTML = this.diveLines(t);
+    },
+
+    loopLit(t) {
+      const T = this.T;
+      const loop = span(t, T.loop, 2.5);
+      const deg = 210 + 360 * easeInOut(loop);
+      return this.tiles.map((tile) => {
+        if (loop <= 0) return 0;
+        let target = tile.deg;
+        while (target < 210) target += 360;
+        const since = (deg - target) / 360 * 2.5;
+        if (since < 0) return 0;
+        return Math.exp(-since * 2.2);
+      });
+    },
+
+    diveLines(t) {
+      const T = this.T;
+      const p = span(t, T.dive + 0.2, T.enter - T.dive);
+      if (p <= 0 || p >= 1) return '';
+      const r = rng(5);
+      let s = '';
+      for (let k = 0; k < 40; k++) {
+        const a = r() * Math.PI * 2, d0 = 120 + r() * 300, len = 60 + 260 * easeIn(p);
+        const x0 = 400 + Math.cos(a) * (d0 + 500 * easeIn(p)), y0 = 500 + Math.sin(a) * (d0 + 500 * easeIn(p));
+        s += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${(x0 + Math.cos(a) * len).toFixed(1)}" y2="${(y0 + Math.sin(a) * len).toFixed(1)}" stroke="${k % 4 ? C.paper : C.signal}" stroke-width="2" opacity="${(0.5 * Math.sin(Math.PI * p)).toFixed(3)}"/>`;
+      }
+      return s;
+    },
+
+    // Inside /estimate. Local time slows around the impact, then snaps back.
+    warp(real) {
+      let scene = 0;
+      const dt = 0.004;
+      for (let x = 0; x < real; x += dt) {
+        const slow = smooth(3.7, 3.9, x) * (1 - smooth(4.4, 4.7, x));
+        scene += (1 - 0.72 * slow) * Math.min(dt, real - x);
+      }
+      return scene;
+    },
+
+    seekInside(t) {
+      const T = this.T;
+      const g = $('inside');
+      const enter = easeOut(span(t, T.enter - 0.05, 0.7));
+      const leave = easeInOut(span(t, T.exit, 0.65));
+      const visible = t >= T.enter - 0.05 && t < T.exit + 0.65;
+      g.setAttribute('opacity', (visible ? clamp(enter * 3) * (1 - smooth(0, 0.55, leave)) : 0).toFixed(3));
+      if (!visible) return;
+      const real = t - T.enter;
+      const tau = this.warp(Math.max(0, real));
+      const punch = easeOut(span(tau, 3.75, 0.3)) * (1 - easeInOut(span(tau, 4.5, 0.6)));
+      const s = lerp(1.35, 1, enter) * lerp(1, 1.22, punch) * lerp(1, 0.3, leave);
+      const cx = lerp(400, 400, punch), cy = lerp(500, this.wallY - 40, punch);
+      const shrinkTo = { x: 400, y: 385 };
+      const tx = lerp(400, shrinkTo.x, leave), ty = lerp(500, shrinkTo.y, leave);
+      g.setAttribute('transform', `translate(${tx.toFixed(1)} ${ty.toFixed(1)}) scale(${s.toFixed(4)}) translate(${-cx} ${(-cy).toFixed(1)})`);
+
+      springLetters(this.inHead, tau, 0.05, 50);
+      slideIn($('inSub'), easeOut(span(tau, 0.35, 0.5)));
+      const { agents, wallY } = this;
+      pop($('agent-0'), 400, agents[0].y, tau - 0.4);
+      pop($('agent-1'), 400, agents[1].y, tau - 2.15);
+      pop($('agent-2'), 400, agents[2].y, tau - 3.0);
+      typeOn($('anote-0'), agents[0].note, span(tau, 1.55, 0.45));
+      typeOn($('anote-1'), agents[1].note, span(tau, 2.75, 0.55));
+      typeOn($('anote-2'), agents[2].note, span(tau, 4.75, 0.6));
+      [[0.45, 0], [2.2, 1], [4.6, 2]].forEach(([start, i]) => {
+        const p = span(tau, start, 0.7);
+        $(`apulse-${i}`).setAttribute('r', (18 + 36 * easeOut(p)).toFixed(1));
+        $(`apulse-${i}`).setAttribute('opacity', (p > 0 && p < 1 ? 0.8 * (1 - p) : 0).toFixed(3));
+      });
+
+      // The ticket drops on the auditor, gets read, and is swallowed.
+      const drop = tau - 0.55;
+      const collapse = easeInOut(span(tau, 1.7, 0.3));
+      const ticket = $('ticket');
+      if (drop <= 0 || collapse >= 1) ticket.setAttribute('opacity', 0);
+      else {
+        const ty2 = 290 + spring(drop, -170);
+        const rot = spring(drop, -10);
+        const cx2 = lerp(180, 400, collapse), cy2 = lerp(ty2 + 48, agents[0].y, collapse);
+        ticket.setAttribute('opacity', clamp(drop / 0.12).toFixed(3));
+        ticket.setAttribute('transform', `translate(${cx2.toFixed(1)} ${cy2.toFixed(1)}) rotate(${rot.toFixed(2)}) scale(${lerp(1, 0.16, collapse).toFixed(3)}) translate(-85 -48)`);
+      }
+      const scan = span(tau, 0.85, 0.5);
+      $('scan').setAttribute('y', (4 + 88 * easeInOut(scan)).toFixed(1));
+      $('scan').setAttribute('opacity', (scan > 0 && scan < 1 ? 1 : 0).toFixed(2));
+      const chipIn = tau - 1.2, chipOut = easeIn(span(tau, 1.75, 0.35));
+      const chip = $('hours');
+      chip.setAttribute('opacity', (chipIn <= 0 ? 0 : clamp(chipIn / 0.08) * (1 - chipOut)).toFixed(3));
+      const cs = chipIn <= 0 ? 0 : 1 + spring(chipIn, -1);
+      chip.setAttribute('transform', `translate(${(640 + 30 * chipOut).toFixed(1)} ${(300 + 40 * chipOut).toFixed(1)}) scale(${Math.max(0, cs).toFixed(3)}) rotate(${(14 * chipOut).toFixed(2)})`);
+      $('strike').setAttribute('x2', (-40 + 80 * easeOut(span(tau, 1.42, 0.2))).toFixed(1));
+
+      // A token rides down to the estimator, which greps the code.
+      const ride = easeInOut(span(tau, 1.85, 0.4));
+      const railY = lerp(agents[0].y, agents[1].y, ride);
+      $('railA').setAttribute('y2', railY.toFixed(1));
+      $('railA').setAttribute('opacity', tau > 1.85 ? 1 : 0);
+      $('token').setAttribute('transform', `translate(400 ${railY.toFixed(1)})`);
+      $('token').setAttribute('opacity', (tau > 1.82 && tau < 2.3 ? 1 : 0).toFixed(2));
+      const panelIn = easeOut(span(tau, 2.35, 0.3)), panelOut = easeIn(span(tau, 3.4, 0.3));
+      $('grep').setAttribute('opacity', (panelIn * (1 - panelOut)).toFixed(3));
+      this.paths.forEach((path, i) => {
+        typeOn($(`gp-${i}`), path, span(tau, 2.45 + i * 0.15, 0.22));
+        const active = Math.floor(clamp((tau - 2.5) / 0.2, 0, 5));
+        $(`gp-${i}`).setAttribute('fill', active === i ? C.signal : C.quiet);
+      });
+      const act = clamp((tau - 2.5) / 0.2, 0, 3.999);
+      $('grepBar').setAttribute('y', (410 + Math.floor(act) * 25).toFixed(1));
+      $('grepBar').setAttribute('opacity', (tau > 2.5 && tau < 3.35 ? 0.22 : 0).toFixed(2));
+
+      // The wall goes up; the derivation smashes into it, the estimate passes.
+      const wallDraw = easeOut(span(tau, 3.05, 0.45));
+      $('wall').setAttribute('x1', (400 - 330 * wallDraw).toFixed(1));
+      $('wall').setAttribute('x2', (400 + 330 * wallDraw).toFixed(1));
+      const shimmer = span(tau, 3.15, 0.6);
+      $('shimmer').setAttribute('x', (70 + 610 * easeInOut(shimmer)).toFixed(1));
+      $('shimmer').setAttribute('opacity', (shimmer > 0 && shimmer < 1 ? 0.9 : 0).toFixed(2));
+      $('wallLabel').setAttribute('opacity', easeOut(span(tau, 3.4, 0.4)).toFixed(3));
+      $('railB').setAttribute('y2', lerp(agents[1].y + 24, wallY - 30, easeOut(span(tau, 3.1, 0.4))).toFixed(1));
+      $('railB').setAttribute('opacity', tau > 3.1 ? 1 : 0);
+
+      const emerge = easeOut(span(tau, 3.2, 0.35));
+      const impact = 3.95;
+      const derT = easeIn(span(tau, 3.3, impact - 3.3));
+      const der = { x: lerp(400, 300, emerge), y: lerp(agents[1].y + 82, wallY - 36, derT) };
+      $('derivation').setAttribute('opacity', (tau < impact ? emerge : 0).toFixed(3));
+      $('derivation').setAttribute('transform', `translate(${der.x.toFixed(1)} ${der.y.toFixed(1)}) scale(${lerp(0.3, 1, emerge).toFixed(3)})`);
+      const estT = easeInOut(span(tau, 3.4, 1.15));
+      const est = { x: lerp(400, 510, emerge), y: lerp(agents[1].y + 82, agents[2].y - 76, estT) };
+      $('estimate').setAttribute('opacity', emerge.toFixed(3));
+      $('estimate').setAttribute('transform', `translate(${est.x.toFixed(1)} ${est.y.toFixed(1)}) scale(${lerp(0.3, 1, emerge).toFixed(3)})`);
+      $('check').setAttribute('stroke-dasharray', '1 1');
+      $('check').setAttribute('stroke-dashoffset', (1 - easeOut(span(tau, 4.7, 0.35))).toFixed(3));
+
+      const since = tau - impact;
+      $('shards').innerHTML = since <= 0 || since > 1.3 ? '' : this.shards.map((sh) => {
+        const x = 300 + sh.dx + sh.vx * since;
+        const yy = wallY - 40 + sh.dy + sh.vy * since + 0.5 * 900 * since * since;
+        const o = 1 - smooth(0.45, 1.2, since);
+        return `<rect x="${(-sh.w / 2).toFixed(1)}" y="${(-sh.h / 2).toFixed(1)}" width="${sh.w.toFixed(1)}" height="${sh.h.toFixed(1)}" rx="2" fill="${C.surface}" stroke="${C.quiet}" stroke-width="1.5" opacity="${o.toFixed(3)}" transform="translate(${x.toFixed(1)} ${yy.toFixed(1)}) rotate(${(sh.spin * since).toFixed(1)})"/>`;
+      }).join('');
+      const passT = 3.4 + 1.15 * 0.42;
+      $('ripples').innerHTML = [[impact, 300, C.paper], [passT, 510, C.signal]].map(([start, rx, colour]) => {
+        const p = span(tau, start, 0.6);
+        if (p <= 0 || p >= 1) return '';
+        return `<ellipse cx="${rx}" cy="${wallY}" rx="${(14 + 60 * easeOut(p)).toFixed(1)}" ry="${(4 + 16 * easeOut(p)).toFixed(1)}" fill="none" stroke="${colour}" stroke-width="3" opacity="${(0.9 * (1 - p)).toFixed(3)}"/>`;
+      }).join('');
+      const fx = [];
+      const burst = tau - impact;
+      if (burst > 0 && burst < 0.7) {
+        this.sparks.forEach((sp) => {
+          const x = 300 + sp.vx * burst, yy = wallY - 6 + sp.vy * burst + 0.5 * 700 * burst * burst;
+          const tx = x - sp.vx * 0.05, ty = yy - (sp.vy + 700 * burst) * 0.05;
+          fx.push(`<line x1="${tx.toFixed(1)}" y1="${ty.toFixed(1)}" x2="${x.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="${sp.gold ? C.signal : C.paper}" stroke-width="2.4" stroke-linecap="round" opacity="${(1 - burst / 0.7).toFixed(3)}"/>`);
+        });
+        fx.push(`<rect x="${230}" y="${wallY - 5}" width="140" height="10" rx="5" fill="${C.paper}" filter="url(#glow)" opacity="${(1 - smooth(0, 0.45, burst)).toFixed(3)}"/>`);
+        fx.push(`<circle cx="300" cy="${wallY}" r="${(10 + 100 * easeOut(clamp(burst / 0.5))).toFixed(1)}" fill="none" stroke="${C.paper}" stroke-width="3" opacity="${(0.8 * (1 - clamp(burst / 0.5))).toFixed(3)}"/>`);
+      }
+      const through = tau - passT;
+      if (through > 0 && through < 0.6) {
+        const o = 1 - through / 0.6;
+        for (let k = 0; k < 12; k++) {
+          const a = (k / 12) * Math.PI * 2, r0 = 20 + 120 * easeOut(through / 0.6), r1 = r0 + 26;
+          fx.push(`<line x1="${(510 + Math.cos(a) * r0).toFixed(1)}" y1="${(wallY + Math.sin(a) * r0 * 0.6).toFixed(1)}" x2="${(510 + Math.cos(a) * r1).toFixed(1)}" y2="${(wallY + Math.sin(a) * r1 * 0.6).toFixed(1)}" stroke="${C.signal}" stroke-width="3" stroke-linecap="round" opacity="${o.toFixed(3)}"/>`);
+        }
+        fx.push(`<ellipse cx="510" cy="${wallY}" rx="${(60 + 80 * through).toFixed(1)}" ry="${(24 + 50 * through).toFixed(1)}" fill="${C.signal}" filter="url(#glowWide)" opacity="${(0.55 * o).toFixed(3)}"/>`);
+      }
+      const ignite = span(tau, 4.55, 0.8);
+      if (ignite > 0 && ignite < 1) fx.push(`<circle cx="400" cy="${agents[2].y}" r="${(16 + 44 * easeOut(ignite)).toFixed(1)}" fill="${C.signal}" filter="url(#glowWide)" opacity="${(0.7 * (1 - ignite)).toFixed(3)}"/>`);
+      $('ifx').innerHTML = fx.join('');
+      $('vring').setAttribute('stroke', mix(C.paper, C.signal, ignite > 0 ? Math.sin(Math.PI * clamp(ignite * 1.2)) : 0));
+    },
+
+    seekEnd(t) {
+      const T = this.T;
+      const g = $('end');
+      const on = t >= T.endBoom;
+      g.setAttribute('opacity', on ? 1 : 0);
+      if (!on) return;
+      const drift = easeInOut(span(t, T.endBoom, this.duration - T.endBoom));
+      g.setAttribute('transform', `translate(400 520) scale(${lerp(1, 1.035, drift).toFixed(4)}) translate(-400 -520)`);
+      springLetters(this.endA, t, T.endBoom + 0.05, 60);
+      pop($('plus'), 400, 430, t - (T.endBoom + 0.35));
+      springLetters(this.endB, t, T.endBoom + 0.45, 60);
+      slideIn($('e1'), easeOut(span(t, T.endBoom + 1.0, 0.5)), 0);
+      $('e1').setAttribute('transform', `translate(0 ${(16 * (1 - easeOut(span(t, T.endBoom + 1.0, 0.5)))).toFixed(1)})`);
+      slideIn($('e2'), easeOut(span(t, T.endBoom + 1.25, 0.5)), 0);
+      $('e2').setAttribute('transform', `translate(0 ${(16 * (1 - easeOut(span(t, T.endBoom + 1.25, 0.5)))).toFixed(1)})`);
+      const lineIn = easeOut(span(t, T.endBoom + 1.5, 0.5));
+      $('eLine').setAttribute('x1', (400 - 150 * lineIn).toFixed(1));
+      $('eLine').setAttribute('x2', (400 + 150 * lineIn).toFixed(1));
+      decode($('e3'), 'github.com/mehboobali98', t, T.endBoom + 1.7, 0.7, C.quiet, { seed: 40, noise: C.go });
+    },
+  };
+
+  document.fonts.ready.then(() => {
+    film.build();
+    window.frame = { width: 1080, height: 1350 };
+    window.duration = film.duration;
+    window.seek = (t) => film.seek(t);
+    window.seek(Number(params.get('t') ?? film.duration));
+    window.ready = true;
+  });
+</script>
+</body>
+</html>

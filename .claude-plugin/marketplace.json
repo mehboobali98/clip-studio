@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "clip-studio",
+  "description": "Code-rendered video clips for Claude Code.",
+  "owner": {
+    "name": "Mehboob Ali",
+    "url": "https://github.com/mehboobali98"
+  },
+  "plugins": [
+    {
+      "name": "clip-studio",
+      "description": "Make short, polished videos from code: product demos and motion-graphics clips, rendered frame by frame with Playwright and ffmpeg.",
+      "source": "./",
+      "category": "productivity",
+      "keywords": ["video", "motion-graphics", "product-demo", "playwright", "ffmpeg"],
+      "license": "MIT"
+    }
+  ]
+}
