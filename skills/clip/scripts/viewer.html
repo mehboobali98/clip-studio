@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>clip preview</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0d11; color: #d7dae0; font: 13px/1.4 -apple-system, system-ui, sans-serif; }
+  body { display: grid; grid-template-rows: 1fr auto; }
+  #stage { display: grid; place-items: center; overflow: hidden; }
+  #holder { position: relative; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
+  iframe { border: 0; transform-origin: 0 0; display: block; }
+  #bar { display: grid; grid-template-columns: auto auto 1fr auto auto auto; gap: 10px; align-items: center; padding: 10px 14px; background: #14171d; border-top: 1px solid #262a33; }
+  button { background: #222731; color: inherit; border: 1px solid #333a46; border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: #d97757; }
+  input[type=range] { width: 100%; accent-color: #d97757; }
+  #time { font: 12px Menlo, monospace; min-width: 120px; text-align: right; }
+  #marks { grid-column: 1 / -1; font: 12px Menlo, monospace; color: #8a909a; white-space: nowrap; overflow-x: auto; }
+  #marks b { color: #d7dae0; font-weight: 400; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="holder"><iframe id="scene" title="scene"></iframe></div></div>
+<div id="bar">
+  <button id="play" title="Space">Play</button>
+  <button id="reload" title="R">Reload</button>
+  <input id="scrub" type="range" min="0" max="1" step="0.0166667" value="0">
+  <span id="time">0.00 / 0.00s</span>
+  <button id="mark" title="M">Mark</button>
+  <button id="clear">Clear</button>
+  <div id="marks">Mark moments (M) to build a keyframe command. Space plays, arrows step a frame, Shift+arrows a second.</div>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const page = params.get('page'), file = params.get('file') || page, cap = params.get('cap') || 'capture.mjs';
+  const frameEl = document.getElementById('scene'), holder = document.getElementById('holder');
+  const scrub = document.getElementById('scrub'), timeEl = document.getElementById('time');
+  let t = Number(sessionStorage.getItem('clip-t') || 0), duration = 1, playing = false, last = 0;
+  const marks = JSON.parse(sessionStorage.getItem('clip-marks') || '[]');
+
+  function fit() {
+    const w = frameEl.contentWindow?.frame?.width || 1080, h = frameEl.contentWindow?.frame?.height || 1350;
+    const box = document.getElementById('stage').getBoundingClientRect();
+    const s = Math.min((box.width - 40) / w, (box.height - 40) / h, 1);
+    frameEl.style.width = w + 'px'; frameEl.style.height = h + 'px';
+    frameEl.style.transform = `scale(${s})`;
+    holder.style.width = w * s + 'px'; holder.style.height = h * s + 'px';
+  }
+  function show(x) {
+    t = Math.max(0, Math.min(duration, x));
+    frameEl.contentWindow?.seek?.(t);
+    scrub.value = t;
+    timeEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)}s`;
+    sessionStorage.setItem('clip-t', t);
+  }
+  function renderMarks() {
+    const el = document.getElementById('marks');
+    if (!marks.length) return;
+    const times = marks.map((m) => m.toFixed(2)).join(' ');
+    el.innerHTML = `<b>node "${cap}" "${file}" keys keys ${times}</b>`;
+    sessionStorage.setItem('clip-marks', JSON.stringify(marks));
+  }
+  function load() {
+    frameEl.src = `${page}?t=${t}&r=${Date.now()}`;
+    frameEl.onload = () => {
+      const wait = setInterval(() => {
+        const win = frameEl.contentWindow;
+        if (!win.ready) return;
+        clearInterval(wait);
+        duration = win.duration;
+        scrub.max = duration;
+        fit();
+        show(t);
+      }, 50);
+    };
+  }
+  function tick(now) {
+    if (!playing) return;
+    show(t + (now - last) / 1000);
+    last = now;
+    if (t >= duration) { playing = false; document.getElementById('play').textContent = 'Play'; return; }
+    requestAnimationFrame(tick);
+  }
+  function toggle() {
+    playing = !playing;
+    document.getElementById('play').textContent = playing ? 'Pause' : 'Play';
+    if (playing) { if (t >= duration) show(0); last = performance.now(); requestAnimationFrame(tick); }
+  }
+  scrub.oninput = () => show(Number(scrub.value));
+  document.getElementById('play').onclick = toggle;
+  document.getElementById('reload').onclick = load;
+  document.getElementById('mark').onclick = () => { marks.push(t); marks.sort((a, b) => a - b); renderMarks(); };
+  document.getElementById('clear').onclick = () => { marks.length = 0; sessionStorage.removeItem('clip-marks'); document.getElementById('marks').textContent = 'Marks cleared.'; };
+  addEventListener('resize', fit);
+  addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); toggle(); }
+    else if (e.key === 'ArrowRight') show(t + (e.shiftKey ? 1 : 1 / 60));
+    else if (e.key === 'ArrowLeft') show(t - (e.shiftKey ? 1 : 1 / 60));
+    else if (e.key === 'm' || e.key === 'M') document.getElementById('mark').click();
+    else if (e.key === 'r' || e.key === 'R') load();
+  });
+  renderMarks();
+  load();
+</script>
+</body>
+</html>
