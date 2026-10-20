@@ -251,14 +251,14 @@
       core.innerHTML = `<circle id="coreGlow" cx="${CORE.x}" cy="${CORE.y}" r="70" fill="${C.go}" filter="url(#glowWide)" opacity="0.3"/>
         <circle cx="${CORE.x}" cy="${CORE.y}" r="58" fill="#10202A" stroke="${C.go}" stroke-width="3"/>
         <text class="mono" font-size="25" x="${CORE.x}" y="${CORE.y + 3}" text-anchor="middle" fill="${C.go}">rmine</text>
-        <text class="mono" font-size="12" x="${CORE.x}" y="${CORE.y + 24}" text-anchor="middle" fill="${C.quiet}">the CLI</text>`;
+        <text class="mono" font-size="15" x="${CORE.x}" y="${CORE.y + 26}" text-anchor="middle" fill="${C.quiet}">the CLI</text>`;
       this.tiles = ringTiles.map((tile, i) => {
         const p = ringPoint(tile.deg);
         const node = el('g', { id: `tile-${i}` }, two);
-        node.innerHTML = `<rect class="tg" x="${p.x - 120}" y="${p.y - 40}" width="240" height="80" rx="14" fill="${C.signal}" filter="url(#glow)" opacity="0"/>
-          <rect class="tb" x="${p.x - 116}" y="${p.y - 37}" width="232" height="74" rx="12" fill="${C.surface}" stroke="${C.lineStrong}" stroke-width="2"/>
-          <text class="mono" font-size="22" x="${p.x - 98}" y="${p.y - 4}" fill="${C.signal}">${tile.name}</text>
-          <text class="mono" font-size="13.5" x="${p.x - 98}" y="${p.y + 21}" fill="${C.quiet}">${tile.note}</text>`;
+        node.innerHTML = `<rect class="tg" x="${p.x - 129}" y="${p.y - 40}" width="258" height="80" rx="14" fill="${C.signal}" filter="url(#glow)" opacity="0"/>
+          <rect class="tb" x="${p.x - 125}" y="${p.y - 37}" width="250" height="74" rx="12" fill="${C.surface}" stroke="${C.lineStrong}" stroke-width="2"/>
+          <text class="mono" font-size="22" x="${p.x - 106}" y="${p.y - 4}" fill="${C.signal}">${tile.name}</text>
+          <text class="mono" font-size="15" x="${p.x - 106}" y="${p.y + 22}" fill="${C.quiet}">${tile.note}</text>`;
         return { ...tile, ...p, node };
       });
       el('g', { id: 'loopComet' }, two);
@@ -310,7 +310,7 @@
         <rect id="grepBar" x="58" y="0" width="288" height="24" rx="4" fill="${C.signal}" opacity="0.2"/>
         ${this.paths.map((_, i) => `<text id="gp-${i}" class="mono" font-size="15" x="68" y="${428 + i * 25}" fill="${C.quiet}"></text>`).join('')}`;
       const card = (id, title, colour, rows) => {
-        const c = el('g', { id }, g);
+        const c = el('g', { id, 'data-lint': 'decor' }, g);
         c.innerHTML = `<rect x="-78" y="-34" width="156" height="68" rx="10" fill="${colour === C.signal ? '#2A2415' : C.surface}" stroke="${colour}" stroke-width="2.5"/>
           <text class="mono" font-size="16" x="-62" y="-10" fill="${colour}">${title}</text>${rows}`;
       };
@@ -790,10 +790,29 @@
     },
   };
 
-  document.fonts.ready.then(() => {
+  // An optional brand.json next to this page restyles the template without
+  // touching its code: { "colors": { <key in C>: "#hex" }, "fonts": { <class>: "family stack" } }.
+  async function applyBrand() {
+    const brand = await fetch('brand.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+    Object.assign(C, brand.colors || {});
+    if (brand.fonts) {
+      const style = document.createElement('style');
+      style.textContent = Object.entries(brand.fonts).map(([cls, family]) => `.${cls} { font-family: ${family}; }`).join('\n');
+      document.head.append(style);
+    }
+    await document.fonts.ready;
+    // Web fonts split by unicode-range load a subset only when a glyph needs it,
+    // which can land mid-capture; load them all first so every frame is final.
+    await Promise.all([...document.fonts].map((f) => f.load().catch(() => {})));
+  }
+
+  applyBrand().then(() => {
     film.build();
+    const T = film.T;
     window.frame = { width: 1080, height: 1350 };
     window.duration = film.duration;
+    // The punch-in at the wall crops the header on purpose.
+    window.lintSkip = [[T.implode, T.boom + 0.7], [T.dive, T.enter + 0.6], [T.enter + 3.6, T.enter + 5.0], [T.exit, T.exit + 0.8], [T.close, T.endBoom + 0.6]];
     window.seek = (t) => film.seek(t);
     window.seek(Number(params.get('t') ?? film.duration));
     window.ready = true;
