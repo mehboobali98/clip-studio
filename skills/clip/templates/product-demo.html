@@ -164,7 +164,7 @@
         const f = el('filter', { id: `cb-${i}`, x: '-10%', y: '-40%', width: '120%', height: '180%' }, $('topDefs'));
         el('feGaussianBlur', { id: `cbs-${i}`, stdDeviation: 0 }, f);
         const wrap = el('g', { id: `cap-${i}`, filter: `url(#cb-${i})` }, g);
-        el('text', { class: 'mono', 'font-size': 14, 'letter-spacing': 2.6, x: 400, y: 88, 'text-anchor': 'middle', fill: C.accent }, wrap).textContent = c.eyebrow;
+        el('text', { class: 'mono', 'font-size': 15, 'letter-spacing': 2.6, x: 400, y: 88, 'text-anchor': 'middle', fill: C.accent }, wrap).textContent = c.eyebrow;
         el('text', { class: 'ui', 'font-size': 41, 'font-weight': 650, 'letter-spacing': -0.6, x: 400, y: 144, 'text-anchor': 'middle', fill: C.text }, wrap).textContent = c.head;
         const subs = c.subs.map(([at, text]) => {
           const n = el('text', { class: 'ui', 'font-size': 21, x: 400, y: 186, 'text-anchor': 'middle', fill: C.dim }, wrap);
@@ -197,7 +197,7 @@
       el('path', { d: 'M30 250 H770 A14 14 0 0 1 784 264 V286 H16 V264 A14 14 0 0 1 30 250 Z', fill: C.bar }, w);
       el('line', { x1: 16, y1: 286.5, x2: 784, y2: 286.5, stroke: C.border, 'stroke-width': 1 }, w);
       ['#FF5F57', '#FEBC2E', '#28C840'].forEach((c, i) => el('circle', { cx: 38 + i * 20, cy: 268, r: 6, fill: c }, w));
-      el('text', { id: 'winTitle', class: 'ui', 'font-size': 13, x: 400, y: 272.5, 'text-anchor': 'middle', fill: C.dim }, w);
+      el('text', { id: 'winTitle', class: 'ui', 'font-size': 15, x: 400, y: 273.5, 'text-anchor': 'middle', fill: C.dim }, w);
       const screen = el('g', { id: 'inner' }, el('g', { 'clip-path': 'url(#screen)' }, w));
       this.scenes = {
         term: el('g', { id: 'sTerm' }, screen),
@@ -640,10 +640,39 @@
     },
   };
 
-  document.fonts.ready.then(() => {
+  // An optional brand.json next to this page restyles the template without
+  // touching its code: { "colors": { <key in C>: "#hex" }, "fonts": { <class>: "family stack" } }.
+  async function applyBrand() {
+    const brand = await fetch('brand.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+    Object.assign(C, brand.colors || {});
+    if (brand.fonts) {
+      const style = document.createElement('style');
+      style.textContent = Object.entries(brand.fonts).map(([cls, family]) => `.${cls} { font-family: ${family}; }`).join('\n');
+      document.head.append(style);
+    }
+    await document.fonts.ready;
+    // Web fonts split by unicode-range load a subset only when a glyph needs it,
+    // which can land mid-capture; load them all first so every frame is final.
+    await Promise.all([...document.fonts].map((f) => f.load().catch(() => {})));
+  }
+
+  applyBrand().then(() => {
     film.build();
+    const H = film.HOOK;
     window.frame = { width: 1080, height: 1350 };
     window.duration = film.duration;
+    // Captions for an SRT file: the hook, each beat's headline with its sub, the end card.
+    window.captions = [
+      { from: 0.1, to: H, text: film.hookLines.map((l) => l.n.textContent).join(' ') },
+      ...film.captions.flatMap((c) => c.subs.map(([at, text], k) => ({
+        from: H + (k ? at : c.from),
+        to: H + (c.subs[k + 1] ? c.subs[k + 1][0] - 0.3 : c.to),
+        text: `${c.head}\n${text}`,
+      }))),
+      { from: H + 22.95, to: film.duration, text: `${$('endTitle').textContent}\n${$('endSub').textContent}` },
+    ];
+    // Transitions where text is mid-swoop or mid-turn on purpose.
+    window.lintSkip = [[1.7, H + 1.4], [H + 6.7, H + 7.8], [H + 10.4, H + 11.5], [H + 18.7, H + 19.8], [H + 22.2, H + 23.7]];
     window.seek = (t) => film.seek(t);
     window.seek(Number(params.get('t') ?? film.duration));
     window.ready = true;
