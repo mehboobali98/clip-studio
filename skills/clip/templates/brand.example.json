@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy next to your scene as brand.json. colors keys are the C palette keys of the template you use; fonts keys are its CSS classes. Product demo: colors text, dim, faint, frame, bar, border, accent, ok, key, str, num, prompt; fonts ui, mono. Motion graphics: colors ink, surface, line, lineStrong, quiet, paper, signal, teal, heat, go; fonts fr, sans, mono.",
+  "colors": {
+    "accent": "#4F8CFF"
+  },
+  "fonts": {
+    "ui": "\"Inter\", system-ui, sans-serif"
+  }
+}
